@@ -113,7 +113,7 @@ function wildcardToRegex(pattern: string): RegExp {
  * OpenSSH Host-stanza matching: `*` / `?` wildcards, `!` negation. A
  * negated pattern that matches vetoes the whole stanza, regardless of any
  * other patterns on the line. Matching is case-SENSITIVE, like OpenSSH's
- * `match_pattern()` — `Host GPU76` does not match a `gpu76` destination.
+ * `match_pattern()` — `Host DEVBOX76` does not match a `devbox76` destination.
  */
 function hostMatchesPatterns(patterns: readonly string[], host: string): boolean {
   let matched = false;

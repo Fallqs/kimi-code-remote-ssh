@@ -79,9 +79,9 @@ describe('recordRecentWorkdir', () => {
   });
 
   it('stores ssh:// specs verbatim', () => {
-    recordRecentWorkdir('ssh://gpu24/home/user/proj');
+    recordRecentWorkdir('ssh://devbox24/home/user/proj');
 
-    expect(loadRecentWorkdirs()).toEqual(['ssh://gpu24/home/user/proj']);
+    expect(loadRecentWorkdirs()).toEqual(['ssh://devbox24/home/user/proj']);
   });
 
   it('ignores blank workdirs', () => {

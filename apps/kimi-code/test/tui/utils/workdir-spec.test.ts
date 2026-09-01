@@ -123,14 +123,14 @@ describe('sameWorkDir', () => {
   });
 
   it('compares ssh specs verbatim when either side is an ssh workdir', () => {
-    expect(sameWorkDir('ssh://gpucluster/work', 'ssh://gpucluster/work')).toBe(true);
-    expect(sameWorkDir('ssh://gpucluster/work', 'ssh://gpucluster/other')).toBe(false);
+    expect(sameWorkDir('ssh://devcluster/work', 'ssh://devcluster/work')).toBe(true);
+    expect(sameWorkDir('ssh://devcluster/work', 'ssh://devcluster/other')).toBe(false);
     // Stored ssh workdirs are canonical; a differently-cased or unnormalized
     // spec is a different session.
-    expect(sameWorkDir('ssh://GPUCLUSTER/work', 'ssh://gpucluster/work')).toBe(false);
-    expect(sameWorkDir('ssh://gpucluster/work/', 'ssh://gpucluster/work')).toBe(false);
-    expect(sameWorkDir('ssh://gpucluster/work', root)).toBe(false);
-    expect(sameWorkDir(root, 'ssh://gpucluster/work')).toBe(false);
+    expect(sameWorkDir('ssh://DEVCLUSTER/work', 'ssh://devcluster/work')).toBe(false);
+    expect(sameWorkDir('ssh://devcluster/work/', 'ssh://devcluster/work')).toBe(false);
+    expect(sameWorkDir('ssh://devcluster/work', root)).toBe(false);
+    expect(sameWorkDir(root, 'ssh://devcluster/work')).toBe(false);
   });
 
   it('keeps the resolved-path comparison for local paths', () => {

@@ -118,13 +118,13 @@ describe('resolveSshConnection()', () => {
 
   it('matches Host patterns case-sensitively, like OpenSSH', () => {
     const configPath = writeConfig(
-      ['Host GpuCluster', '    HostName gpu.internal.example.com'].join('\n'),
+      ['Host DevCluster', '    HostName gpu.internal.example.com'].join('\n'),
     );
-    expect(resolveSshConnection('GpuCluster', { configPath }).hostname).toBe(
+    expect(resolveSshConnection('DevCluster', { configPath }).hostname).toBe(
       'gpu.internal.example.com',
     );
-    expect(resolveSshConnection('gpucluster', { configPath }).hostname).toBeUndefined();
-    expect(resolveSshConnection('GPUCLUSTER', { configPath }).hostname).toBeUndefined();
+    expect(resolveSshConnection('devcluster', { configPath }).hostname).toBeUndefined();
+    expect(resolveSshConnection('DEVCLUSTER', { configPath }).hostname).toBeUndefined();
   });
 
   it('honors first-value-wins across stanzas', () => {

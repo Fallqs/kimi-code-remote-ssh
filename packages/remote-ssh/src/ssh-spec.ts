@@ -9,7 +9,7 @@
  * {@link canonicalizeSshWorkDirSpec} produces the identity string used for
  * session bucketing, metadata, and resume: scheme lowercased, host kept
  * verbatim (OpenSSH matches Host stanzas case-SENSITIVELY, so lowercasing
- * an alias like `GPU76` would break the stanza match), the default port 22
+ * an alias like `DEVBOX76` would break the stanza match), the default port 22
  * elided, and the path posix-normalized without a trailing slash.
  */
 

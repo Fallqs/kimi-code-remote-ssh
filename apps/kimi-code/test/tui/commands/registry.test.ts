@@ -171,16 +171,16 @@ describe('built-in slash command registry', () => {
   });
 
   it('offers recent workdirs for ssh:// prefixes where no fs completion exists', () => {
-    recordRecentWorkdir('ssh://gpu24/home/user/proj');
+    recordRecentWorkdir('ssh://devbox24/home/user/proj');
     recordRecentWorkdir('ssh://other/home/user/proj');
     recordRecentWorkdir('/local/proj');
 
-    const items = newSessionArgumentCompletions('ssh://g') ?? [];
+    const items = newSessionArgumentCompletions('ssh://d') ?? [];
 
     expect(items).toEqual([
       {
-        value: 'ssh://gpu24/home/user/proj',
-        label: 'ssh://gpu24/home/user/proj',
+        value: 'ssh://devbox24/home/user/proj',
+        label: 'ssh://devbox24/home/user/proj',
         description: 'Recent directory',
       },
     ]);

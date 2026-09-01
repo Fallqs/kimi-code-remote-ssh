@@ -29,8 +29,8 @@ describe('parseSshWorkDirSpec', () => {
   });
 
   it('parses a minimal alias spec', () => {
-    expect(parseSshWorkDirSpec('ssh://gpu08/data')).toEqual({
-      host: 'gpu08',
+    expect(parseSshWorkDirSpec('ssh://devbox08/data')).toEqual({
+      host: 'devbox08',
       user: undefined,
       port: undefined,
       path: '/data',
@@ -80,8 +80,8 @@ describe('parseSshWorkDirSpec', () => {
 
 describe('canonicalizeSshWorkDirSpec', () => {
   it('lowercases the scheme, keeps the host verbatim, elides the default port, normalizes the path', () => {
-    expect(canonicalizeSshWorkDirSpec('SSH://User@GPU08:22/data/x/../y')).toBe(
-      'ssh://User@GPU08/data/y',
+    expect(canonicalizeSshWorkDirSpec('SSH://User@DEVBOX08:22/data/x/../y')).toBe(
+      'ssh://User@DEVBOX08/data/y',
     );
   });
 
@@ -101,12 +101,12 @@ describe('canonicalizeSshWorkDirSpec', () => {
 
 describe('formatSshWorkDirSpec', () => {
   it('renders the canonical form of an already-parsed spec', () => {
-    expect(formatSshWorkDirSpec({ host: 'GPU08', user: 'me', port: 22, path: '/data' })).toBe(
-      'ssh://me@GPU08/data',
+    expect(formatSshWorkDirSpec({ host: 'DEVBOX08', user: 'me', port: 22, path: '/data' })).toBe(
+      'ssh://me@DEVBOX08/data',
     );
-    expect(formatSshWorkDirSpec({ host: 'gpu08', path: '/' })).toBe('ssh://gpu08/');
-    expect(formatSshWorkDirSpec({ host: 'gpu08', port: 2222, path: '/d' })).toBe(
-      'ssh://gpu08:2222/d',
+    expect(formatSshWorkDirSpec({ host: 'devbox08', path: '/' })).toBe('ssh://devbox08/');
+    expect(formatSshWorkDirSpec({ host: 'devbox08', port: 2222, path: '/d' })).toBe(
+      'ssh://devbox08:2222/d',
     );
   });
 });

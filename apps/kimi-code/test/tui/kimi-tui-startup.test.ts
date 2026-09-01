@@ -2561,7 +2561,7 @@ describe('KimiTUI createNewSession with a workdir spec', () => {
   it('creates an ssh session from the raw spec and switches to the canonical workdir', async () => {
     const root = mkdtempSync(join(tmpdir(), 'kimi-new-session-'));
     try {
-      const session = makeSession({ id: 'ses-ssh', workDir: 'ssh://gpucluster/home/user' });
+      const session = makeSession({ id: 'ses-ssh', workDir: 'ssh://devcluster/home/user' });
       const harness = makeHarness(session);
       const driver = makeDriver(harness, {
         ...makeStartupInput(),
@@ -2569,16 +2569,16 @@ describe('KimiTUI createNewSession with a workdir spec', () => {
       }) as unknown as NewSessionDriver;
 
       await expect(driver.init()).resolves.toBe(false);
-      await driver.createNewSession('  ssh://GpuCluster:22/home/user/  ');
+      await driver.createNewSession('  ssh://DevCluster:22/home/user/  ');
 
       // The raw spec goes to the SDK — canonicalization and the ssh
       // connection are the SDK's job.
       expect(harness.createSession).toHaveBeenLastCalledWith(
-        expect.objectContaining({ workDir: 'ssh://GpuCluster:22/home/user/' }),
+        expect.objectContaining({ workDir: 'ssh://DevCluster:22/home/user/' }),
       );
       expect(driver.state.appState.sessionId).toBe('ses-ssh');
       // The TUI follows the SDK-canonicalized workdir from the session summary.
-      expect(driver.state.appState.workDir).toBe('ssh://gpucluster/home/user');
+      expect(driver.state.appState.workDir).toBe('ssh://devcluster/home/user');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -2596,7 +2596,7 @@ describe('KimiTUI createNewSession with a workdir spec', () => {
       harness.createSession.mockRejectedValueOnce(new Error('Connection refused'));
       const showError = vi.spyOn(driver, 'showError').mockImplementation(() => {});
 
-      await driver.createNewSession('ssh://gpucluster/home/user');
+      await driver.createNewSession('ssh://devcluster/home/user');
 
       expect(showError).toHaveBeenCalledWith('Failed to start a new session: Connection refused');
       expect(driver.state.appState.sessionId).toBe('ses-current');
