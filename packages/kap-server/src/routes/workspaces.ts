@@ -1,10 +1,13 @@
 import {
+  Error2,
+  ErrorCodes,
   IHostFileSystem,
   IWorkspaceInstanceManager,
   IWorkspaceService,
   IWorkspaceSessions,
   type IWorkspaceSshConnection,
   IWorkspaceTrust,
+  isSshWorkDirSpec,
   SshRuntime,
   type Scope,
   type Workspace,
@@ -99,6 +102,26 @@ export function registerWorkspacesRoutes(app: WorkspaceRouteHost, core: Scope): 
     },
     async (req, reply) => {
       const root = req.body.root;
+      if (isSshWorkDirSpec(root)) {
+        try {
+          const ws = await core.accessor.get(IWorkspaceService).createOrTouch(root, req.body.name);
+          reply.send(okEnvelope(await toWireWorkspace(core, ws), req.id));
+        } catch (error) {
+          const code = error instanceof Error2 ? error.code : undefined;
+          if (code === ErrorCodes.WORKSPACE_SSH_DISABLED || code === ErrorCodes.VALIDATION_FAILED) {
+            reply.send(
+              errEnvelope(
+                ErrorCode.VALIDATION_FAILED,
+                error instanceof Error ? error.message : String(error),
+                req.id,
+              ),
+            );
+            return;
+          }
+          throw error;
+        }
+        return;
+      }
       if (!isAbsolute(root)) {
         reply.send(
           buildValidationEnvelope(

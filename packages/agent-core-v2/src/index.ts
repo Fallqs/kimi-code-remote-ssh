@@ -48,6 +48,7 @@ export * from '#/workspace/workspaceSsh/flag';
 export * from '#/workspace/workspaceSsh/sshConnection';
 export * from '#/workspace/workspaceSsh/sshRuntime';
 export * from '#/workspace/workspaceSsh/sshRuntimeProvider';
+export * from '#/workspace/workspaceSsh/sshSpec';
 export * from '#/agent/runtimeBinding/runtimeBinding';
 export * from '#/agent/runtimeBinding/runtimeBindingService';
 export * from '#/agent/runtimeBinding/agentRuntime';

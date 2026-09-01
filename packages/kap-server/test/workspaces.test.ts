@@ -144,6 +144,30 @@ describe('server-v2 /api/v1/workspaces', () => {
     expect(body.code).toBe(40409);
   });
 
+  it('rejects ssh roots while the ssh-workdir flag is off, registers them when on', async () => {
+    const root = 'ssh://example.com/tmp/proj';
+    const rejected = await postJson<null>('/api/v1/workspaces', { root });
+    expect(rejected.body.code).toBe(40001);
+
+    const res = await fetch(`${base}/api/v1/config`, {
+      method: 'POST',
+      headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
+      body: JSON.stringify({ experimental: { 'ssh-workdir': true } }),
+    } as never);
+    expect(res.status).toBe(200);
+
+    const accepted = await postJson<WorkspaceWire>('/api/v1/workspaces', { root, name: 'remote-proj' });
+    expect(accepted.body.code).toBe(0);
+    expect(accepted.body.data.root).toBe(root);
+    expect(accepted.body.data.name).toBe('remote-proj');
+
+    const again = await postJson<WorkspaceWire>('/api/v1/workspaces', { root });
+    expect(again.body.data.id).toBe(accepted.body.data.id);
+
+    const malformed = await postJson<null>('/api/v1/workspaces', { root: 'ssh://' });
+    expect(malformed.body.code).toBe(40001);
+  });
+
   it('lists registered workspaces', async () => {
     const root = home as string;
     const created = await postJson<WorkspaceWire>('/api/v1/workspaces', { root });
