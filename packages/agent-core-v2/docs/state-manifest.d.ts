@@ -100,8 +100,8 @@
 //     promptResolution                                src/agent/prompt/promptService.ts
 //     runtime.binding                                 src/agent/runtimeBinding/runtimeBindingService.ts
 //     runtimeBinding                                  src/agent/runtimeBinding/runtimeBindingOps.ts
-//     shellCommand.tasks                              src/agent/shellCommand/shellCommandService.ts
 //     shadow.wasActive                                src/features/shadow/injection/shadowModeInjection.ts
+//     shellCommand.tasks                              src/agent/shellCommand/shellCommandService.ts
 //     staleGuard                                      src/features/staleGuard/staleGuardOps.ts
 //     stepRetry.failedAttempts                        src/agent/stepRetry/stepRetryService.ts
 //     stepRetry.lastFailedDriverId                    src/agent/stepRetry/stepRetryService.ts
@@ -1500,6 +1500,8 @@ export interface AgentStateSnapshot {
     readonly id?: string;
     readonly revisionCount?: Readonly<Record<string, number>>;
   };
+  // src/features/shadow/injection/shadowModeInjection.ts
+  'shadow.wasActive': boolean;
   // src/features/staleGuard/staleGuardOps.ts
   // replayable · durable — folds: StaleGuardRecorded, StaleGuardCleared
   'staleGuard': /* StaleGuardModelState — packages/agent-core-v2/src/features/staleGuard/staleGuardOps.ts */ Map<string, number>;
@@ -1513,8 +1515,6 @@ export interface AgentStateSnapshot {
   'tower.base': string | null;
   // replayable · durable — folds: TowerModeEnter, TowerModeExit
   'tower.owner': string | undefined;
-  // src/features/shadow/injection/shadowModeInjection.ts
-  'shadow.wasActive': boolean;
 }
 
 export type AgentStateKey = keyof AgentStateSnapshot;
