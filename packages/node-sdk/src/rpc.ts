@@ -72,6 +72,7 @@ import type {
   PluginCommandDef,
   Unsubscribe,
   UploadFileOptions,
+  WorkspaceSshConnectionState,
   WorkspaceTrustInfo,
 } from '#/types';
 
@@ -292,6 +293,25 @@ export abstract class SDKRpcClientBase {
 
   async trustWorkspace(workDir: string): Promise<void> {
     void workDir;
+  }
+
+  /**
+   * Ssh-connection state of an ssh:// `workDir`. Only the v2 engine carries
+   * ssh workspaces, so the base implementation reports `undefined` (no ssh
+   * connection) and the resume write is a no-op returning the same.
+   */
+  async getWorkspaceSshConnectionState(
+    workDir: string,
+  ): Promise<WorkspaceSshConnectionState | undefined> {
+    void workDir;
+    return undefined;
+  }
+
+  async resumeWorkspaceSshConnection(
+    workDir: string,
+  ): Promise<WorkspaceSshConnectionState | undefined> {
+    void workDir;
+    return undefined;
   }
 
   async renameSession(input: RenameSessionInput): Promise<void> {

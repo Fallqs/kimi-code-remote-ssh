@@ -223,6 +223,7 @@ import {
   PRINT_WAIT_CEILING_S_DEFAULT,
   ProfileError,
   ProfileErrors,
+  SshRuntime,
   Error2 as V2Error2,
   ErrorCodes as V2ErrorCodes,
   resolveAgentTaskConfig,
@@ -234,6 +235,7 @@ import {
   type IAgentScopeHandle,
   type IDisposable,
   type ISessionScopeHandle,
+  type IWorkspaceSshConnection,
   type McpManagedServer,
   type Scope,
   type ServicesAccessor,
@@ -318,6 +320,7 @@ import type {
   SkillSummary,
   TelemetryClient,
   UploadFileOptions,
+  WorkspaceSshConnectionState,
   WorkspaceTrustInfo,
 } from '#/types';
 import {
@@ -664,6 +667,46 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
       .get(IWorkspaceInstanceManager)
       .getOrCreate({ root: workDir });
     await handler.program.trust.trust();
+  }
+
+  /**
+   * klient has no ssh-connection facade; composed directly from the engine
+   * via {@link engineAccessor} — the same `getOrCreate({ root })` path the
+   * workspace-trust surface takes. `undefined` when the workdir's runtime is
+   * not an ssh one (local roots, non-ssh backends, v1 engine).
+   */
+  override async getWorkspaceSshConnectionState(
+    workDir: string,
+  ): Promise<WorkspaceSshConnectionState | undefined> {
+    return (await this.sshConnectionFor(workDir))?.state();
+  }
+
+  /**
+   * The manual-resume affordance: acknowledges an interrupted,
+   * background-re-established ssh pipe (`blocked` → `ready`). Idempotent
+   * while `ready`; throws while a reconnect is still in flight. See
+   * {@link getWorkspaceSshConnectionState}.
+   */
+  override async resumeWorkspaceSshConnection(
+    workDir: string,
+  ): Promise<WorkspaceSshConnectionState | undefined> {
+    const connection = await this.sshConnectionFor(workDir);
+    if (connection === undefined) return undefined;
+    await connection.resume();
+    return connection.state();
+  }
+
+  /**
+   * The workdir's ssh connection, or undefined when the workspace instance's
+   * `local` runtime is not an {@link SshRuntime} (local roots, non-ssh
+   * backends).
+   */
+  private async sshConnectionFor(workDir: string): Promise<IWorkspaceSshConnection | undefined> {
+    const instance = await this.engineAccessor
+      .get(IWorkspaceInstanceManager)
+      .getOrCreate({ root: workDir });
+    const runtime = instance.runtimes.current('local');
+    return runtime instanceof SshRuntime ? runtime.connection : undefined;
   }
 
   /**

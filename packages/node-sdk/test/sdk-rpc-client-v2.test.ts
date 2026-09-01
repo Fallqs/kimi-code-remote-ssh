@@ -1121,6 +1121,25 @@ key = "${titleOAuthRef.key}"
   });
 });
 
+describe('SDKRpcClientV2 ssh workdir specs', () => {
+  it('passes an ssh:// workDir to the engine verbatim (no local-path normalization)', async () => {
+    const { harness } = await makeHarness();
+    try {
+      // The ssh_workdir flag is off in this tree, so the engine rejects the
+      // spec — the assertion pins that the rejection carries the UNMANGLED
+      // spec. Local-path normalization would turn it into `<cwd>/ssh:/…`
+      // (single slash) before the engine ever saw it.
+      const rejection = await harness
+        .createSession({ workDir: 'ssh://mangle-check.example.test/work' })
+        .catch((error: unknown) => error);
+      expect(rejection).toBeInstanceOf(Error);
+      expect((rejection as Error).message).toContain('ssh://mangle-check.example.test/work');
+    } finally {
+      await harness.close();
+    }
+  });
+});
+
 describe('SDKRpcClientV2 workspace trust', () => {
   it('reports an untrusted workspace with the project MCP servers it gates', async () => {
     const { harness } = await makeHarness();

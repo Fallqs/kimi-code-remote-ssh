@@ -26,8 +26,14 @@ import type { JsonObject, SessionSummary } from '#/types';
  * everything else resolves against the process cwd. Duplicated here because
  * the SDK test config aliases `@moonshot-ai/agent-core` to its index, which
  * blocks the deep import — keep it byte-identical to the v1 original.
+ *
+ * One deliberate extension: `ssh://` workspace roots are spec strings, not
+ * local paths. Resolving one against the process cwd would mangle it before
+ * the engine's ssh runtime provider ever sees the spec, so ssh specs pass
+ * through verbatim.
  */
 export function normalizeWorkDir(workDir: string): string {
+  if (/^ssh:\/\//i.test(workDir)) return workDir;
   if (/^[A-Za-z]:[\\/]/.test(workDir) || /^[\\/]{2}[^\\/]+[\\/][^\\/]+/.test(workDir)) {
     return win32.resolve(workDir).replaceAll('\\', '/');
   }

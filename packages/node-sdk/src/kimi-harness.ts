@@ -47,6 +47,7 @@ import type {
   TelemetryProperties,
   TestMcpServerOptions,
   UploadFileOptions,
+  WorkspaceSshConnectionState,
   WorkspaceTrustInfo,
 } from '#/types';
 
@@ -418,6 +419,26 @@ export class KimiHarness {
   /** Mark `workDir` as trusted; project-level MCP servers connect live afterwards. */
   async trustWorkspace(workDir: string): Promise<void> {
     return this.rpc.trustWorkspace(workDir);
+  }
+
+  /**
+   * Ssh-connection state of an ssh:// `workDir` (agent-core-v2 only);
+   * `undefined` when the workdir carries no ssh connection.
+   */
+  async getWorkspaceSshConnectionState(
+    workDir: string,
+  ): Promise<WorkspaceSshConnectionState | undefined> {
+    return this.rpc.getWorkspaceSshConnectionState(workDir);
+  }
+
+  /**
+   * Acknowledge an interrupted ssh connection (`blocked` → `ready`);
+   * returns the resulting state, or `undefined` for non-ssh workdirs.
+   */
+  async resumeWorkspaceSshConnection(
+    workDir: string,
+  ): Promise<WorkspaceSshConnectionState | undefined> {
+    return this.rpc.resumeWorkspaceSshConnection(workDir);
   }
 
   async getConfig(options: GetConfigOptions = {}): Promise<KimiConfig> {

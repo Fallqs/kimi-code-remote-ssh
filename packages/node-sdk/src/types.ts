@@ -113,6 +113,20 @@ export interface WorkspaceTrustInfo {
   readonly gatedMcpServers: readonly WorkspaceTrustMcpServerInfo[];
 }
 
+/**
+ * Pipe state of an ssh:// workspace's remote connection — the
+ * `SshPipeState` of `@moonshot-ai/remote-ssh`, spelled out so the v1 client
+ * needs no engine import. Only meaningful on agent-core-v2 with an
+ * ssh-materialized workspace handler; `undefined` surfaces everywhere else.
+ */
+export type WorkspaceSshConnectionState =
+  | 'disconnected'
+  | 'connecting'
+  | 'ready'
+  | 'reconnecting'
+  | 'blocked'
+  | 'closed';
+
 /** Metadata of one upload in the engine's daemon file store. */
 export type { FileMeta } from '@moonshot-ai/agent-core-v2/app/file/fileService';
 
