@@ -27,7 +27,7 @@
 // references become '(circular)', and class instances collapse to a '(ClassName)'
 // marker — the wire shape of an entry is the JSON projection of the type here.
 //
-// Index (App: 0 keys · Workspace: 6 keys · Session: 9 keys · Agent: 82 keys)
+// Index (App: 0 keys · Workspace: 6 keys · Session: 9 keys · Agent: 83 keys)
 //   App
 //   Workspace
 //     workspaceDirs.ephemeralDirs          src/workspace/workspaceDirs/workspaceDirsService.ts
@@ -101,6 +101,7 @@
 //     runtime.binding                                 src/agent/runtimeBinding/runtimeBindingService.ts
 //     runtimeBinding                                  src/agent/runtimeBinding/runtimeBindingOps.ts
 //     shellCommand.tasks                              src/agent/shellCommand/shellCommandService.ts
+//     shadow.wasActive                                src/features/shadow/injection/shadowModeInjection.ts
 //     staleGuard                                      src/features/staleGuard/staleGuardOps.ts
 //     stepRetry.failedAttempts                        src/agent/stepRetry/stepRetryService.ts
 //     stepRetry.lastFailedDriverId                    src/agent/stepRetry/stepRetryService.ts
@@ -1512,6 +1513,8 @@ export interface AgentStateSnapshot {
   'tower.base': string | null;
   // replayable · durable — folds: TowerModeEnter, TowerModeExit
   'tower.owner': string | undefined;
+  // src/features/shadow/injection/shadowModeInjection.ts
+  'shadow.wasActive': boolean;
 }
 
 export type AgentStateKey = keyof AgentStateSnapshot;

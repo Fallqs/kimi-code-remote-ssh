@@ -43,6 +43,7 @@ import {
 import { readWireRecords, type ContextRecord } from './wireRecords';
 import { toWireQuestion } from '../../protocol/question-wire';
 import { projectPromptContentParts } from '../messages/messageProjection';
+import { tryShadowAlias } from '../../shadowAlias';
 import {
   bindSessionTranscript,
   descriptorFromMeta,
@@ -105,21 +106,22 @@ export class TranscriptService {
   }
 
   forSessionLive(sessionId: string): TranscriptStore | undefined {
-    const existing = this.live.get(sessionId);
+    const engineId = tryShadowAlias(this.deps.core.accessor)?.effectiveId(sessionId) ?? sessionId;
+    const existing = this.live.get(engineId);
     if (existing !== undefined) {
-      if (getLiveSessionById(this.deps.core.accessor, sessionId) !== undefined) {
+      if (getLiveSessionById(this.deps.core.accessor, engineId) !== undefined) {
         return existing.store;
       }
-      this.dropSession(sessionId);
+      this.dropSession(engineId);
       return undefined;
     }
-    const session = getLiveSessionById(this.deps.core.accessor, sessionId);
+    const session = getLiveSessionById(this.deps.core.accessor, engineId);
     if (session === undefined) return undefined;
-    const store = new TranscriptStore(sessionId);
+    const store = new TranscriptStore(engineId);
     let binding: TranscriptBinding;
     try {
       binding = bindSessionTranscript(store, session, this.deps.logger, (event) =>
-        this.handleLiveOps(sessionId, event),
+        this.handleLiveOps(engineId, event),
       );
     } catch (error) {
       if (error instanceof Error && error.message === 'InstantiationService has been disposed') {
@@ -127,12 +129,12 @@ export class TranscriptService {
       }
       throw error;
     }
-    this.live.set(sessionId, {
+    this.live.set(engineId, {
       store,
       binding,
       ready: (async () => {
-        await this.backfillMain(sessionId, store);
-        if (this.live.get(sessionId)?.store === store) {
+        await this.backfillMain(engineId, store);
+        if (this.live.get(engineId)?.store === store) {
           binding.seedPendingInteractions(MAIN_AGENT_ID);
         }
       })(),
@@ -143,21 +145,22 @@ export class TranscriptService {
   }
 
   async whenReady(sessionId: string): Promise<void> {
-    await this.live.get(sessionId)?.ready;
+    await this.live.get(tryShadowAlias(this.deps.core.accessor)?.effectiveId(sessionId) ?? sessionId)?.ready;
   }
 
   async ensureAgentHistory(sessionId: string, agentId: string): Promise<void> {
     if (agentId === MAIN_AGENT_ID) return this.whenReady(sessionId);
-    const entry = this.live.get(sessionId);
+    const engineId = tryShadowAlias(this.deps.core.accessor)?.effectiveId(sessionId) ?? sessionId;
+    const entry = this.live.get(engineId);
     if (entry === undefined) return;
     await entry.ready;
     let backfill = entry.agentBackfills.get(agentId);
     if (backfill === undefined) {
-      backfill = this.backfillAgent(sessionId, entry.store, agentId);
+      backfill = this.backfillAgent(engineId, entry.store, agentId);
       entry.agentBackfills.set(agentId, backfill);
     }
     await backfill;
-    if (this.live.get(sessionId)?.store === entry.store) {
+    if (this.live.get(engineId)?.store === entry.store) {
       entry.binding.seedPendingInteractions(agentId);
     }
   }
@@ -222,15 +225,16 @@ export class TranscriptService {
     listener: (event: TranscriptChangeEvent, seq: number) => void,
   ): IDisposable | undefined {
     if (this.forSessionLive(sessionId) === undefined) return undefined;
-    let listeners = this.opsListeners.get(sessionId);
+    const engineId = tryShadowAlias(this.deps.core.accessor)?.effectiveId(sessionId) ?? sessionId;
+    let listeners = this.opsListeners.get(engineId);
     if (listeners === undefined) {
       listeners = new Set();
-      this.opsListeners.set(sessionId, listeners);
+      this.opsListeners.set(engineId, listeners);
     }
     listeners.add(listener);
     return {
       dispose: () => {
-        const entry = this.opsListeners.get(sessionId);
+        const entry = this.opsListeners.get(engineId);
         if (entry === undefined) return;
         entry.delete(listener);
         if (entry.size === 0) this.opsListeners.delete(sessionId);
@@ -265,7 +269,9 @@ export class TranscriptService {
   }
 
   getSeqWatermark(sessionId: string, agentId: string): number {
-    const journal = this.live.get(sessionId)?.opsJournals.get(agentId);
+    const journal = this.live
+      .get(tryShadowAlias(this.deps.core.accessor)?.effectiveId(sessionId) ?? sessionId)
+      ?.opsJournals.get(agentId);
     return journal === undefined ? 0 : journal.nextSeq - 1;
   }
 
@@ -275,7 +281,9 @@ export class TranscriptService {
     sinceSeq: number,
   ): TranscriptOpsCatchup | undefined {
     if (this.forSessionLive(sessionId) === undefined) return undefined;
-    const journal = this.live.get(sessionId)?.opsJournals.get(agentId);
+    const journal = this.live
+      .get(tryShadowAlias(this.deps.core.accessor)?.effectiveId(sessionId) ?? sessionId)
+      ?.opsJournals.get(agentId);
     const latestSeq = journal === undefined ? 0 : journal.nextSeq - 1;
     if (sinceSeq > latestSeq) return { batches: [], latestSeq, complete: false };
     const batches = journal?.batches.filter((batch) => batch.seq > sinceSeq) ?? [];

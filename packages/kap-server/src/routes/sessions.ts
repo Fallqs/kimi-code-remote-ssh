@@ -19,9 +19,7 @@ import {
   IWorkspaceAliases,
   ISessionManager,
   IWorkspaceService,
-  getLiveSessionById,
   programForSession,
-  resumeSessionById,
   setSessionArchived,
   isError2,
   Error2,
@@ -63,6 +61,12 @@ import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { requestLog } from '../lib/requestLog';
+import {
+  getLiveSessionForClient,
+  isClientVisibleSessionId,
+  resumeSessionForClient,
+  tryShadowAlias,
+} from '../shadowAlias';
 import { defineRoute } from '../middleware/defineRoute';
 import { readLegacyStatus } from '../services/legacyStatus/legacyStatus';
 import { ensureMainAgent, MAIN_AGENT_ID } from '../transport/mainAgent';
@@ -323,6 +327,7 @@ export function registerSessionsRoutes(app: SessionRouteHost, core: Scope): void
           if (page.items.length === 0) break;
           let exhausted = false;
           for (const summary of page.items) {
+            if (tryShadowAlias(core.accessor)?.isShadowId(summary.id) === true) continue;
             if (!newerThanCursor(summary)) {
               exhausted = true;
               break;
@@ -354,6 +359,7 @@ export function registerSessionsRoutes(app: SessionRouteHost, core: Scope): void
         });
         const eligible: Eligible[] = [];
         for (const summary of page.items) {
+          if (tryShadowAlias(core.accessor)?.isShadowId(summary.id) === true) continue;
           const cwd = summary.cwd ?? roots.get(summary.workspaceId);
           if (cwd === undefined) continue;
           if (raw.exclude_empty === true && (summary.lastPrompt ?? '').length === 0) continue;
@@ -548,7 +554,7 @@ export function registerSessionsRoutes(app: SessionRouteHost, core: Scope): void
     async (req, reply) => {
       try {
         const { session_id } = req.params;
-        const handle = await resumeSessionById(core.accessor, session_id);
+        const handle = await resumeSessionForClient(core.accessor, session_id);
         if (handle === undefined) {
           reply.send(
             errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} not found`, req.id),
@@ -648,7 +654,7 @@ export function registerSessionsRoutes(app: SessionRouteHost, core: Scope): void
       try {
         const { session_id } = req.params;
         const exists =
-          getLiveSessionById(core.accessor, session_id) !== undefined ||
+          getLiveSessionForClient(core.accessor, session_id) !== undefined ||
           (await core.accessor.get(ISessionIndex).get(session_id)) !== undefined;
         if (!exists) {
           throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${session_id} does not exist`);
@@ -809,7 +815,7 @@ export function registerSessionsRoutes(app: SessionRouteHost, core: Scope): void
     },
     async (req, reply) => {
       const { session_id } = req.params;
-      const session = await resumeSessionById(core.accessor, session_id);
+      const session = await resumeSessionForClient(core.accessor, session_id);
       if (session === undefined) {
         reply.send(
           errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id),
@@ -939,7 +945,7 @@ async function abortSessionAction(ctx: SessionActionCtx): Promise<void> {
 
 async function btwSessionAction(ctx: SessionActionCtx): Promise<void> {
   const { core, req, reply, id } = ctx;
-  const session = await resumeSessionById(core.accessor, id);
+  const session = await resumeSessionForClient(core.accessor, id);
   if (session === undefined) {
     throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${id} does not exist`);
   }
@@ -1030,7 +1036,7 @@ export interface SessionFacts {
 }
 
 export function resolveSessionFacts(core: Scope, sessionId: string): SessionFacts {
-  const handle = getLiveSessionById(core.accessor, sessionId);
+  const handle = getLiveSessionForClient(core.accessor, sessionId);
   if (handle === undefined) {
     return {
       busy: false,
@@ -1053,7 +1059,7 @@ function readLiveSessionModel(session: ISessionScopeHandle): string | undefined 
 }
 
 async function resolveMainAgent(core: Scope, sessionId: string): Promise<IAgentScopeHandle> {
-  const session = await resumeSessionById(core.accessor, sessionId);
+  const session = await resumeSessionForClient(core.accessor, sessionId);
   if (session === undefined) {
     throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
   }

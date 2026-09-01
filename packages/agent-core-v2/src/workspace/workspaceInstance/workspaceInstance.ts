@@ -24,7 +24,7 @@ export class WorkspaceInstance {
     readonly metadata: Workspace,
     runtimes: RuntimeRegistry,
     unitHost: RuntimeUnitHost,
-    context: IWorkspaceContext,
+    readonly context: IWorkspaceContext,
     dependencies: ProgramDependencies,
   ) {
     this.runtimes = runtimes;

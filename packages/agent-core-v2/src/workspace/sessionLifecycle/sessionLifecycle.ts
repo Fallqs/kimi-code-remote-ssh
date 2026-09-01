@@ -25,6 +25,14 @@ export interface ForkSessionOptions {
   readonly turnIndex?: number;
 }
 
+export interface ExternalSessionSource {
+  readonly sessionId: string;
+  readonly handlerScope: string;
+  readonly handle?: ISessionScopeHandle;
+}
+
+export type ForkFromSessionOptions = Omit<ForkSessionOptions, 'sourceSessionId'>;
+
 export interface ResumeSessionOptions {
   readonly additionalDirs?: readonly string[];
   readonly mcpServers?: Readonly<Record<string, McpServerConfig>>;
@@ -87,6 +95,7 @@ export interface ISessionLifecycleService {
   restore(sessionId: string, opts?: ResumeSessionOptions): Promise<ISessionScopeHandle | undefined>;
   delete(sessionId: string): Promise<void>;
   fork(opts: ForkSessionOptions): Promise<SessionMeta>;
+  forkFrom(source: ExternalSessionSource, opts: ForkFromSessionOptions): Promise<SessionMeta>;
   createChild(opts: CreateChildSessionOptions): Promise<SessionMeta>;
 }
 

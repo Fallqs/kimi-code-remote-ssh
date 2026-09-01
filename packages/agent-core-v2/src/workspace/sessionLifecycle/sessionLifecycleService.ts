@@ -98,6 +98,8 @@ import {
 import {
   type CreateChildSessionOptions,
   type CreateSessionOptions,
+  type ExternalSessionSource,
+  type ForkFromSessionOptions,
   type ForkSessionOptions,
   type ResumeSessionOptions,
   type SessionArchivedEvent,
@@ -478,6 +480,20 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     ) {
       throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sourceId} does not exist`);
     }
+    return this.forkFrom(
+      { sessionId: sourceId, handlerScope: this.handlerScope, handle: sourceHandle },
+      opts,
+    );
+  }
+
+  async forkFrom(
+    source: ExternalSessionSource,
+    opts: ForkFromSessionOptions,
+  ): Promise<SessionMeta> {
+    const sourceId = source.sessionId;
+    const sourceScope = source.handlerScope;
+    const sourceHandle = source.handle;
+
     if (sourceHandle !== undefined) {
       const sourceAgents = sourceHandle.accessor.get(IAgentLifecycleService);
       for (const agent of sourceAgents.list()) {
@@ -503,7 +519,10 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       const sourceMeta =
         sourceHandle !== undefined
           ? await sourceHandle.accessor.get(ISessionMetadata).read()
-          : await this.readMetaFromDisk(sourceId);
+          : await this.readMetaFromDisk(sourceScope, sourceId);
+      if (sourceMeta === undefined) {
+        throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sourceId} does not exist`);
+      }
 
       targetId = opts.newSessionId ?? createSessionId();
       if (this.sessions.has(targetId) || (await this.index.get(targetId)) !== undefined) {
@@ -517,14 +536,14 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         opts.turnIndex === undefined
           ? undefined
           : sliceMainRecordsAtTurn(
-              await this.readSourceWireRecords(sourceHandle, sourceId, MAIN_AGENT_ID),
+              await this.readSourceWireRecords(sourceHandle, sourceScope, sourceId, MAIN_AGENT_ID),
               sourceId,
               opts.turnIndex,
             );
 
       targetSessionDir = sessionDirOf(this.bootstrap.homeDir, this.handlerScope, targetId);
       await this.copySessionFiles(
-        sessionDirOf(this.bootstrap.homeDir, this.handlerScope, sourceId),
+        sessionDirOf(this.bootstrap.homeDir, sourceScope, sourceId),
         targetSessionDir,
         turnSlice !== undefined,
       );
@@ -540,7 +559,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
             slicedRecords = turnSlice.records;
           } else {
             const subagentRecords = sliceSubagentRecordsAtTime(
-              await this.readSourceWireRecords(sourceHandle, sourceId, agentId),
+              await this.readSourceWireRecords(sourceHandle, sourceScope, sourceId, agentId),
               turnSlice.cutoffTime,
             );
             if (subagentRecords.length === 0) continue;
@@ -548,6 +567,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
           }
           await this.copyAgentWire({
             sourceHandle,
+            sourceScope,
             sourceSessionId: sourceId,
             agentId,
             targetSessionId: targetId,
@@ -650,6 +670,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
 
   private async copyAgentWire(args: {
     readonly sourceHandle: ISessionScopeHandle | undefined;
+    readonly sourceScope: string;
     readonly sourceSessionId: string;
     readonly agentId: string;
     readonly targetSessionId: string;
@@ -657,7 +678,12 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
   }): Promise<void> {
     const records = [
       ...(args.records ??
-        (await this.readSourceWireRecords(args.sourceHandle, args.sourceSessionId, args.agentId))),
+        (await this.readSourceWireRecords(
+          args.sourceHandle,
+          args.sourceScope,
+          args.sourceSessionId,
+          args.agentId,
+        ))),
     ];
     if (records.length === 0) {
       records.push(createWireMetadataRecord());
@@ -708,6 +734,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
 
   private async readSourceWireRecords(
     sourceHandle: ISessionScopeHandle | undefined,
+    sourceScope: string,
     sourceSessionId: string,
     agentId: string,
   ): Promise<WireRecord[]> {
@@ -719,7 +746,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         await agentHandle.accessor.get(IEventDispatcher).flush();
       }
     }
-    const scope = agentScopeOf(sessionScopeOf(this.handlerScope, sourceSessionId), agentId);
+    const scope = agentScopeOf(sessionScopeOf(sourceScope, sourceSessionId), agentId);
     let truncation: AppendLogTruncation | undefined;
     const records = await collect(
       this.appendLogStore.read<WireRecord>(scope, AGENT_WIRE_RECORD_KEY, {
@@ -819,8 +846,11 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     await Promise.all(fileWrites);
   }
 
-  private async readMetaFromDisk(sessionId: string): Promise<SessionMeta | undefined> {
-    return this.docs.get<SessionMeta>(sessionScopeOf(this.handlerScope, sessionId), 'state.json');
+  private async readMetaFromDisk(
+    sourceScope: string,
+    sessionId: string,
+  ): Promise<SessionMeta | undefined> {
+    return this.docs.get<SessionMeta>(sessionScopeOf(sourceScope, sessionId), 'state.json');
   }
 }
 

@@ -6,6 +6,8 @@ import type { SessionMeta } from '#/session/sessionMetadata/sessionMetadata';
 import type {
   CreateChildSessionOptions,
   CreateSessionOptions,
+  ExternalSessionSource,
+  ForkFromSessionOptions,
   ForkSessionOptions,
   ResumeSessionOptions,
   SessionArchivedEvent,
@@ -48,6 +50,11 @@ export interface ISessionManager {
   restore(sessionId: string, options?: ResumeSessionOptions): Promise<ISessionScopeHandle | undefined>;
   delete(sessionId: string): Promise<void>;
   fork(options: ForkSessionOptions): Promise<SessionMeta>;
+  forkFrom(
+    targetRoot: string,
+    source: ExternalSessionSource,
+    options: ForkFromSessionOptions,
+  ): Promise<ISessionScopeHandle>;
   createChild(options: CreateChildSessionOptions): Promise<SessionMeta>;
 }
 

@@ -25,7 +25,6 @@ import {
   type PromptWithSkillsResult,
   reservePrompt,
   ISessionContext,
-  resumeSessionById,
   ITelemetryService,
   applyPromptMetadataUpdate,
   isError2,
@@ -49,6 +48,7 @@ import {
 import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';
+import { resumeSessionForClient } from '../shadowAlias';
 import {
   assertPromptFileRefs,
   assertPromptPathRefs,
@@ -91,7 +91,7 @@ const authProviderDetailsSchema = z.object({ provider_id: z.string() });
 const authModelDetailsSchema = z.object({ model_id: z.string(), provider_id: z.string() }).partial();
 
 async function resolveSession(core: Scope, sessionId: string): Promise<ISessionScopeHandle> {
-  const session = await resumeSessionById(core.accessor, sessionId);
+  const session = await resumeSessionForClient(core.accessor, sessionId);
   if (session === undefined) {
     throw new Error2('session.not_found', `session ${sessionId} does not exist`);
   }
@@ -265,12 +265,12 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
           {
             telemetry,
             resolveOriginalsDir: async () => {
-              const session = await resumeSessionById(core.accessor, session_id);
+              const session = await resumeSessionForClient(core.accessor, session_id);
               if (session === undefined) return undefined;
               return sessionMediaOriginalsDir(session.accessor.get(ISessionContext).sessionDir);
             },
             resolveAttachmentsDir: async () => {
-              const session = await resumeSessionById(core.accessor, session_id);
+              const session = await resumeSessionForClient(core.accessor, session_id);
               if (session === undefined) return undefined;
               return join(session.accessor.get(ISessionContext).sessionDir, 'attachments');
             },

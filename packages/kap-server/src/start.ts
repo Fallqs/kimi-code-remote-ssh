@@ -72,6 +72,8 @@ import { createOriginHook, isOriginAllowed, parseCorsOrigins } from './middlewar
 import { createSecurityHeadersHook } from './middleware/securityHeaders';
 import { createAuthHook } from './middleware/auth';
 import { GuiStoreService } from './services/guiStore/guiStoreService';
+import './shadowHostSupport';
+import './shadowAlias';
 import {
   initializeServerTelemetry,
   type ServerTelemetry,

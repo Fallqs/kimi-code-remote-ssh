@@ -18,11 +18,13 @@ import {
   ISessionActivityView,
   ISessionIndex,
   MAIN_AGENT_ID,
+  SESSION_SHADOW_SWITCHED_EVENT,
   getLiveSessionById,
   listSessionPendingInteractions,
   onSessionInteractionDidChangePending,
   onSessionInteractionDidResolve,
 } from '@moonshot-ai/agent-core-v2';
+import { tryShadowAlias } from '../../../shadowAlias';
 import type {
   ConfigWarningItem,
   DiUnitChangedEvent,
@@ -105,6 +107,7 @@ interface TranscriptStream {
 
 interface SessionState {
   readonly sessionId: string;
+  readonly engineSessionId: string;
   readonly journal: SessionEventJournal;
   readonly tracker: InFlightTurnTracker;
   readonly roster: SubagentRosterTracker;
@@ -536,7 +539,9 @@ export class SessionEventBroadcaster {
   private async createSessionState(sessionId: string): Promise<SessionState | undefined> {
     if (this.closed) return undefined;
 
-    const session = getLiveSessionById(this.opts.core.accessor, sessionId);
+    const engineSessionId =
+      tryShadowAlias(this.opts.core.accessor)?.effectiveId(sessionId) ?? sessionId;
+    const session = getLiveSessionById(this.opts.core.accessor, engineSessionId);
     if (session === undefined) return undefined;
 
     const journal = await SessionEventJournal.open(
@@ -549,6 +554,7 @@ export class SessionEventBroadcaster {
     }
     const state: SessionState = {
       sessionId,
+      engineSessionId,
       journal,
       tracker: new InFlightTurnTracker(),
       roster: new SubagentRosterTracker(),
@@ -597,6 +603,7 @@ export class SessionEventBroadcaster {
     );
     const state: SessionState = {
       sessionId: GLOBAL_SESSION_ID,
+      engineSessionId: GLOBAL_SESSION_ID,
       journal,
       tracker: new InFlightTurnTracker(),
       roster: new SubagentRosterTracker(),
@@ -614,6 +621,19 @@ export class SessionEventBroadcaster {
   }
 
   private onCoreEvent(event: Event2<any>): void {
+    if (event.type === SESSION_SHADOW_SWITCHED_EVENT) {
+      void this.rebindShadowSwitch(
+        event as unknown as {
+          readonly sessionId: string;
+          readonly toSessionId: string;
+          readonly direction: 'enter' | 'exit';
+          readonly fromSessionId: string;
+        },
+      ).catch((error: unknown) =>
+        this.logDispatchError(GLOBAL_SESSION_ID, SESSION_SHADOW_SWITCHED_EVENT, error),
+      );
+      return;
+    }
     const corePayload = (event as { readonly payload?: unknown }).payload;
     if (event.type === 'event.session.created') {
       const payload = sessionCreatedPayload(corePayload);
@@ -765,8 +785,40 @@ export class SessionEventBroadcaster {
     }
   }
 
-  private async dispatchGlobal(event: Event): Promise<void> {
-    const state = await this.ensureGlobalState();
+  private async rebindShadowSwitch(payload: {
+    readonly sessionId: string;
+    readonly toSessionId: string;
+    readonly direction: 'enter' | 'exit';
+    readonly fromSessionId: string;
+  }): Promise<void> {
+    const alias = tryShadowAlias(this.opts.core.accessor);
+    if (alias === undefined) return;
+    alias.noteSwitch(payload);
+    const clientId = payload.sessionId;
+    const engineId = alias.effectiveId(clientId);
+    const existing = this.sessions.get(clientId);
+    if (existing !== undefined && existing.engineSessionId === engineId) return;
+    const staleEngineState = this.sessions.get(payload.toSessionId);
+    if (staleEngineState !== undefined) {
+      this.sessions.delete(payload.toSessionId);
+      await disposeSessionState(staleEngineState);
+    }
+    if (existing === undefined) return;
+    const targets = new Map(existing.targets);
+    this.sessions.delete(clientId);
+    await disposeSessionState(existing);
+    const state = await this.createSessionState(clientId);
+    if (state === undefined) return;
+    for (const [target, sub] of targets) {
+      state.targets.set(target, sub);
+      if (sub.transcriptGrades !== undefined) {
+        await this.subscribeTranscript(state, target, sub.transcriptGrades, undefined, undefined);
+        if (state.targets.has(target)) state.transcriptSeeded.add(target);
+      }
+    }
+  }
+
+  private async dispatchGlobal(event: Event): Promise<void> {    const state = await this.ensureGlobalState();
     state.queue = state.queue
       .then(() => this.dispatch(state, event, isVolatileEventType(event.type)))
       .catch((error: unknown) => this.logDispatchDropped(state.sessionId, event.type, error));

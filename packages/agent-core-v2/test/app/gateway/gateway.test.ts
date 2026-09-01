@@ -123,6 +123,7 @@ describe('RestGateway', () => {
       restore: () => Promise.resolve(sessionHandle),
       delete: () => Promise.resolve(),
       fork: () => Promise.resolve(sessionMeta),
+      forkFrom: () => Promise.resolve(sessionMeta),
       createChild: () => Promise.resolve(sessionMeta),
     };
     const handlerHandle = {

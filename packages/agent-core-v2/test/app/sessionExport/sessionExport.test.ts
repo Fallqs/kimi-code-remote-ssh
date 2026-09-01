@@ -905,6 +905,9 @@ function registerSessionExportServices(
     fork: async () => {
       throw new Error('fork should not be called by session export');
     },
+    forkFrom: async () => {
+      throw new Error('forkFrom should not be called by session export');
+    },
     createChild: async () => {
       throw new Error('createChild should not be called by session export');
     },

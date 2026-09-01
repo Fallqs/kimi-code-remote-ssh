@@ -8,6 +8,8 @@ import { ISessionIndex, type SessionSummary } from '#/app/sessionIndex/sessionIn
 import type { SessionMeta } from '#/session/sessionMetadata/sessionMetadata';
 import {
   type CreateChildSessionOptions,
+  type ExternalSessionSource,
+  type ForkFromSessionOptions,
   type ForkSessionOptions,
   type ResumeSessionOptions,
   type SessionArchivedEvent,
@@ -185,6 +187,29 @@ export class SessionManager implements ISessionManager {
           );
         }
         return controller.fork(options);
+      },
+    );
+  }
+
+  async forkFrom(
+    targetRoot: string,
+    source: ExternalSessionSource,
+    options: ForkFromSessionOptions,
+  ): Promise<ISessionScopeHandle> {
+    return this.serializeLifecycleForKeys(
+      this.lifecycleKeys(source.sessionId, options.newSessionId),
+      async () => {
+        const workspace = await this.workspaces.getOrCreate({ root: targetRoot });
+        const controller = this.controllerForWorkspace(workspace.id);
+        const meta = await controller.forkFrom(source, options);
+        const handle = await controller.resume(meta.id);
+        if (handle === undefined) {
+          throw new Error2(
+            ErrorCodes.SESSION_NOT_FOUND,
+            `session ${meta.id} could not be materialized after fork`,
+          );
+        }
+        return handle;
       },
     );
   }
