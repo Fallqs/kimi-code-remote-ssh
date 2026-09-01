@@ -3,7 +3,9 @@ import {
   IWorkspaceInstanceManager,
   IWorkspaceService,
   IWorkspaceSessions,
+  type IWorkspaceSshConnection,
   IWorkspaceTrust,
+  SshRuntime,
   type Scope,
   type Workspace,
 } from '@moonshot-ai/agent-core-v2';
@@ -23,6 +25,7 @@ import {
   updateWorkspaceRequestSchema,
   updateWorkspaceResponseSchema,
   workspaceIdParamSchema,
+  workspaceSshStateResponseSchema,
   workspaceTrustResponseSchema,
 } from '../protocol/rest-workspace';
 import type { Workspace as WorkspaceWire } from '../protocol/workspace';
@@ -269,6 +272,68 @@ export function registerWorkspacesRoutes(app: WorkspaceRouteHost, core: Scope): 
     untrustRoute.options,
     untrustRoute.handler as Parameters<WorkspaceRouteHost['post']>[2],
   );
+
+  const getSshStateRoute = defineRoute(
+    {
+      method: 'GET',
+      path: '/workspaces/{workspace_id}/ssh/state',
+      params: workspaceIdParamSchema,
+      success: { data: workspaceSshStateResponseSchema },
+      errors: {
+        [ErrorCode.WORKSPACE_NOT_FOUND]: {},
+      },
+      description: 'Read the ssh connection pipe state (ssh:// workspaces only)',
+      tags: ['workspaces'],
+    },
+    async (req, reply) => {
+      const connection = await resolveSshConnection(core, req.params.workspace_id, req.id, reply);
+      if (connection === undefined) return;
+      reply.send(okEnvelope({ state: connection.state() }, req.id));
+    },
+  );
+  app.get(
+    getSshStateRoute.path,
+    getSshStateRoute.options,
+    getSshStateRoute.handler as Parameters<WorkspaceRouteHost['get']>[2],
+  );
+
+  const sshResumeRoute = defineRoute(
+    {
+      method: 'POST',
+      path: '/workspaces/{workspace_id}/ssh/resume',
+      params: workspaceIdParamSchema,
+      success: { data: workspaceSshStateResponseSchema },
+      errors: {
+        [ErrorCode.WORKSPACE_NOT_FOUND]: {},
+        [ErrorCode.WORKSPACE_SSH_NOT_RESUMABLE]: {},
+      },
+      description:
+        'Acknowledge an interrupted ssh connection (blocked → ready; idempotent while ready)',
+      tags: ['workspaces'],
+    },
+    async (req, reply) => {
+      const connection = await resolveSshConnection(core, req.params.workspace_id, req.id, reply);
+      if (connection === undefined) return;
+      try {
+        await connection.resume();
+      } catch (error) {
+        reply.send(
+          errEnvelope(
+            ErrorCode.WORKSPACE_SSH_NOT_RESUMABLE,
+            error instanceof Error ? error.message : String(error),
+            req.id,
+          ),
+        );
+        return;
+      }
+      reply.send(okEnvelope({ state: connection.state() }, req.id));
+    },
+  );
+  app.post(
+    sshResumeRoute.path,
+    sshResumeRoute.options,
+    sshResumeRoute.handler as Parameters<WorkspaceRouteHost['post']>[2],
+  );
 }
 
 type TrustReply = { send(payload: unknown): unknown };
@@ -290,6 +355,37 @@ async function resolveTrust(
     .accessor.get(IWorkspaceInstanceManager)
     .getOrCreate({ workspaceId, root: ws.root });
   return workspace.program.trust;
+}
+
+async function resolveSshConnection(
+  core: Scope,
+  workspaceId: string,
+  requestId: string,
+  reply: TrustReply,
+): Promise<IWorkspaceSshConnection | undefined> {
+  const ws = await core.accessor.get(IWorkspaceService).get(workspaceId);
+  if (ws === undefined) {
+    reply.send(
+      errEnvelope(ErrorCode.WORKSPACE_NOT_FOUND, `workspace ${workspaceId} does not exist`, requestId),
+    );
+    return undefined;
+  }
+  const workspace = await core
+    .accessor.get(IWorkspaceInstanceManager)
+    .getOrCreate({ workspaceId, root: ws.root });
+  const runtime = workspace.runtimes.current('local');
+  const connection = runtime instanceof SshRuntime ? runtime.connection : undefined;
+  if (connection === undefined) {
+    reply.send(
+      errEnvelope(
+        ErrorCode.WORKSPACE_NOT_FOUND,
+        `workspace ${workspaceId} has no ssh connection`,
+        requestId,
+      ),
+    );
+    return undefined;
+  }
+  return connection;
 }
 
 export async function toWireWorkspace(core: Scope, ws: Workspace): Promise<WorkspaceWire> {

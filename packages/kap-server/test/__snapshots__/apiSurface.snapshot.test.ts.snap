@@ -286,6 +286,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/v1/workspaces/{workspace_id}/ssh/state",
+    ],
+    [
+      "GET",
       "/api/v1/workspaces/{workspace_id}/trust",
     ],
     [
@@ -483,6 +487,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/v1/workspaces",
+    ],
+    [
+      "POST",
+      "/api/v1/workspaces/{workspace_id}/ssh/resume",
     ],
     [
       "POST",

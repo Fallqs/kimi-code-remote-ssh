@@ -38,3 +38,8 @@ export const workspaceTrustResponseSchema = z.object({
   trusted: z.boolean(),
 });
 export type WorkspaceTrustResponse = z.infer<typeof workspaceTrustResponseSchema>;
+
+export const workspaceSshStateResponseSchema = z.object({
+  state: z.enum(['disconnected', 'connecting', 'ready', 'reconnecting', 'blocked', 'closed']),
+});
+export type WorkspaceSshStateResponse = z.infer<typeof workspaceSshStateResponseSchema>;
