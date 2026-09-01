@@ -32,6 +32,7 @@ import { registerSearchRoutes } from './search';
 import { registerSessionMediaRoutes } from './sessionMedia';
 import { registerSessionExportRoute } from './sessionExport';
 import { registerSessionsRoutes } from './sessions';
+import { registerShellRoutes } from './shell';
 import { registerShutdownRoutes } from './shutdown';
 import { registerSnapshotRoutes } from './snapshot';
 import { registerSkillsRoutes } from './skills';
@@ -152,6 +153,7 @@ export async function registerApiV1Routes(
         apiV1 as unknown as Parameters<typeof registerPromptsRoutes>[0],
         core,
       );
+      registerShellRoutes(apiV1 as unknown as Parameters<typeof registerShellRoutes>[0], core);
       registerWorkspacesRoutes(
         apiV1 as unknown as Parameters<typeof registerWorkspacesRoutes>[0],
         core,

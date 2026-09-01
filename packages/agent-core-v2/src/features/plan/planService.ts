@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { dirname, join } from 'pathe';
+import { dirname, join, posix } from 'pathe';
 
-import { type IDisposable } from '#/_base/di/lifecycle';
+import { type IDisposable, toDisposable } from '#/_base/di/lifecycle';
 import { Service } from '#/_base/di/service';
 import { unwrapErrorCause } from '#/_base/errors/errors';
 import { Error2, ErrorCodes } from '#/errors';
@@ -26,6 +26,9 @@ import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IBlobStore } from '#/persistence/interface/blobStore';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IEventDispatcher } from '#/state/eventDispatcher';
+import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import type { RuntimeLease } from '#/runtime/runtime';
+import { remoteSessionAgentDir } from '#/workspace/workspaceSsh/remoteSessionDir';
 import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
 import { ContextUndone } from '#/agent/undo/undoService';
 import type { ToolFileAccess } from '#/tool/toolContract';
@@ -47,6 +50,8 @@ export class AgentPlanService extends Service implements IAgentPlanService {
   declare readonly _serviceBrand: undefined;
 
   private readonly review: ExitPlanModeReview;
+  private readonly remoteFs: IHostFileSystem | undefined;
+  private readonly remoteHome: string | undefined;
 
   constructor(
     @IAgentContextMemoryService private readonly context: IAgentContextMemoryService,
@@ -63,9 +68,18 @@ export class AgentPlanService extends Service implements IAgentPlanService {
     @IAgentPermissionModeService private readonly modeService: IAgentPermissionModeService,
     @ITelemetryService telemetry: ITelemetryService,
     @IAgentStateService private readonly agentState: IAgentStateService,
+    @IAgentRuntimeService runtimes?: IAgentRuntimeService,
   ) {
     super();
     this.agentState.contributeState(planKey);
+
+    let runtimeLease: RuntimeLease | undefined;
+    if (this.sessionCtx.remoteCwd !== undefined && runtimes !== undefined) {
+      runtimeLease = runtimes.acquire(['fs']);
+      this.remoteFs = runtimeLease.runtime.fs;
+      this.remoteHome = runtimeLease.runtime.environment.homeDir;
+      this._register(toDisposable(() => runtimeLease?.dispose()));
+    }
 
     this.review = new ExitPlanModeReview(this, this.toolApproval, telemetry);
 
@@ -202,7 +216,7 @@ export class AgentPlanService extends Service implements IAgentPlanService {
     const state = this.agentState.get(planKey);
     if (!state.active || state.id === undefined) return;
     const id = state.id;
-    const content = await this.hostFs.readText(this.planFilePathFor(id));
+    const content = await this.readPlanText(this.planFilePathFor(id));
     const bytes = Buffer.from(content, 'utf8');
     const version = (state.revisionCount?.[id] ?? 0) + 1;
     const scope = this.agentCtx.scope();
@@ -226,7 +240,7 @@ export class AgentPlanService extends Service implements IAgentPlanService {
     const path = this.planFilePathFor(state.id);
     let content = '';
     try {
-      content = await this.hostFs.readText(path);
+      content = await this.readPlanText(path);
     } catch (error) {
       if (!isMissingFileError(error)) throw error;
     }
@@ -238,16 +252,31 @@ export class AgentPlanService extends Service implements IAgentPlanService {
   }
 
   private planFilePathFor(id: string): string {
+    if (this.remoteFs !== undefined && this.remoteHome !== undefined) {
+      return posix.join(
+        remoteSessionAgentDir(this.remoteHome, this.sessionCtx.sessionId, this.agentCtx.agentId),
+        'plans',
+        `${id}.md`,
+      );
+    }
     return join(this.sessionCtx.sessionDir, 'agents', this.agentCtx.agentId, 'plans', `${id}.md`);
   }
 
   private async writeEmptyPlanFile(path: string): Promise<void> {
     await this.ensurePlanDirectory(path);
-    await this.hostFs.writeText(path, '');
+    await this.writePlanText(path, '');
   }
 
   private async ensurePlanDirectory(path: string): Promise<void> {
-    await this.hostFs.mkdir(dirname(path), { recursive: true });
+    await (this.remoteFs ?? this.hostFs).mkdir(dirname(path), { recursive: true });
+  }
+
+  private async readPlanText(path: string): Promise<string> {
+    return (this.remoteFs ?? this.hostFs).readText(path);
+  }
+
+  private async writePlanText(path: string, content: string): Promise<void> {
+    await (this.remoteFs ?? this.hostFs).writeText(path, content);
   }
 }
 

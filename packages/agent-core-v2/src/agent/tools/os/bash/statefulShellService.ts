@@ -16,7 +16,7 @@ import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import type { RuntimeLease } from '#/runtime/runtime';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
-import { remoteSessionDir } from '#/workspace/workspaceSsh/remoteSessionDir';
+import { remoteSessionAgentDir } from '#/workspace/workspaceSsh/remoteSessionDir';
 
 import { RuntimeResumingShellEnv } from './runtimeResumingShellEnv';
 
@@ -48,9 +48,7 @@ export class AgentStatefulShellService extends Disposable implements IAgentState
       const env: ResumingShellEnv = new RuntimeResumingShellEnv(rt);
       this.shell = new ResumingShell(env, {
         snapshotDir: posix.join(
-          remoteSessionDir(rt.environment.homeDir, ctx.sessionId),
-          'agents',
-          scopeContext.agentId,
+          remoteSessionAgentDir(rt.environment.homeDir, ctx.sessionId, scopeContext.agentId),
           'shell-state',
         ),
         initialCwd: ctx.remoteCwd,
