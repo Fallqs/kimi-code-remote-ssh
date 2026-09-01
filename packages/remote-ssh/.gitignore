@@ -1,0 +1,9 @@
+# Generated at build time by tsdown.config.ts (rts-bundle-embed plugin).
+# Only the generated VALUE file is ignored; the committed `.d.ts` stub next to
+# it keeps `#/generated/rts-bundle` type-resolvable on a fresh clone (before
+# any build has produced the `.ts`).
+src/generated/rts-bundle.ts
+
+# SEA build artifacts (prebuilt rts-bin binaries, downloaded node dists):
+# large, built on demand by scripts/build-sea.mjs, never committed.
+sea/
