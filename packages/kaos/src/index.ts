@@ -22,6 +22,22 @@ export {
 } from './errors';
 export { LocalKaos } from './local';
 export {
+  LocalResumingShellEnv,
+  ResumingShell,
+  buildResumingWrapperScript,
+} from './stateful-shell/resuming';
+export type {
+  ResumingProc,
+  ResumingShellEnv,
+  ResumingShellFacts,
+  ResumingShellFs,
+  ResumingShellOptions,
+  ResumingShellProcess,
+  ResumingShellRunInput,
+  ResumingShellSpawnOptions,
+  ResumingWrapperScriptOptions,
+} from './stateful-shell/resuming';
+export {
   chdir,
   exec,
   execWithEnv,

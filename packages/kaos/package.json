@@ -41,6 +41,9 @@
   },
   "scripts": {
     "build": "tsdown",
+    "gen:shell-state-filter": "tsx scripts/gen-shell-state-filter.mts",
+    "bench:resuming": "tsx scripts/bench-resuming.mts",
+    "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist"
   },
