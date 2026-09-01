@@ -1,13 +1,15 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough, Readable, type Writable } from 'node:stream';
 
-import type { Environment, KaosProcess } from '@moonshot-ai/kaos';
-import { describe, expect, it, vi } from 'vitest';
+import { LocalKaos, type Environment, type KaosProcess } from '@moonshot-ai/kaos';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { type BashInput, BashInputSchema, BashTool } from '../../src/tools/builtin/shell/bash';
-import { createBackgroundManager, registerProcess } from '../agent/background/helpers';
+import { type BashInput, BashInputSchema, type BashRunInput, BashTool } from '../../src/tools/builtin/shell/bash';
+import type { BackgroundManager } from '../../src/agent/background';
+import { StatefulShell } from '../../src/tools/builtin/shell/stateful-shell';
+import { createBackgroundManager, registerProcess, waitForTerminal } from '../agent/background/helpers';
 import { createFakeKaos } from './fixtures/fake-kaos';
 import { executeTool } from './fixtures/execute-tool';
 
@@ -1430,5 +1432,553 @@ describe('BashTool prompt / runtime consistency', () => {
     // The implementation reports failures as plain text inside the output
     // (`Command failed with exit code: N`), never via a system tag.
     expect(tool.description).not.toMatch(/exit code will be provided in a system tag/);
+  });
+});
+
+// ── Stateful shell ([bash] stateful) ─────────────────────────────────────
+//
+// These tests drive a REAL bash (via LocalKaos) through the resuming-based
+// StatefulShell wrapper (@moonshot-ai/kaos's ResumingShell core: every
+// command is a fresh bash process whose state is restored from a durable
+// snapshot in `<snapshotDir>/shell-state.*` and committed back on successful
+// foreground exit), so they run anywhere a bash is available (Linux/macOS/Git
+// Bash). HOME is pointed at a temp dir so the developer's own ~/.bashrc
+// (e.g. conda init blocks) cannot leak into the shell.
+
+interface StatefulFixture {
+  readonly shell: StatefulShell;
+  readonly tool: BashTool;
+  readonly manager: BackgroundManager;
+  readonly snapshotDir: string;
+  readonly workDir: string;
+}
+
+describe('BashTool with StatefulShell (real bash)', () => {
+  const statefulSignal = new AbortController().signal;
+  let savedHome: string | undefined;
+
+  beforeAll(() => {
+    savedHome = process.env['HOME'];
+    process.env['HOME'] = mkdtempSync(join(tmpdir(), 'stateful-home-'));
+  });
+
+  afterAll(() => {
+    if (savedHome === undefined) delete process.env['HOME'];
+    else process.env['HOME'] = savedHome;
+  });
+
+  async function createStatefulFixture(
+    options: { autoBackgroundOnTimeout?: boolean; snapshotDir?: string; workDir?: string } = {},
+  ): Promise<StatefulFixture> {
+    const kaos = await LocalKaos.create();
+    const workDir = options.workDir ?? mkdtempSync(join(tmpdir(), 'stateful-wd-'));
+    const snapshotDir =
+      options.snapshotDir ?? mkdtempSync(join(tmpdir(), 'stateful-snap-'));
+    const shell = new StatefulShell(workDir, snapshotDir);
+    const { manager } = createBackgroundManager();
+    const tool = new BashTool(kaos, workDir, manager, {
+      statefulShell: shell,
+      autoBackgroundOnTimeout: options.autoBackgroundOnTimeout ?? true,
+    });
+    return { shell, tool, manager, snapshotDir, workDir };
+  }
+
+  async function disposeFixture(fixture: StatefulFixture): Promise<void> {
+    await fixture.shell.dispose();
+    // A killed wrapper may take a moment to die (the two-stage kill grace);
+    // on Windows a directory cannot be removed while it is a process's cwd.
+    for (let attempt = 0; attempt < 50; attempt++) {
+      try {
+        rmSync(fixture.workDir, { recursive: true, force: true });
+        rmSync(fixture.snapshotDir, { recursive: true, force: true });
+        return;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+    }
+    rmSync(fixture.workDir, { recursive: true, force: true });
+    rmSync(fixture.snapshotDir, { recursive: true, force: true });
+  }
+
+  function runFg(
+    fixture: StatefulFixture,
+    command: string,
+    args: Partial<BashRunInput> = {},
+  ): ReturnType<typeof executeTool<BashInput>> {
+    return executeTool(fixture.tool, {
+      turnId: '0',
+      toolCallId: `tc_${String(Math.random())}`,
+      args: { command, timeout: 60, ...args },
+      signal: statefulSignal,
+    });
+  }
+
+  it('persists exported vars, unexported vars, cwd, and functions across calls', async () => {
+    const fixture = await createStatefulFixture();
+    try {
+      const first = await runFg(
+        fixture,
+        'export FOO_EXPORTED=bar; UNEXPORTED_VAR=qux; cd /; persist_fn() { echo fn-alive; }; echo setup-done',
+      );
+      expect(first).toMatchObject({ isError: false });
+
+      // The committed cwd steers the user's `!` commands…
+      const user = await runFg(fixture, 'echo "[$(pwd)]"', { userInitiated: true });
+      expect(user).toMatchObject({ isError: false });
+      expect(user.output).toContain('[/]');
+
+      // …while agent calls see the committed env/functions but start at the
+      // session cwd, not the committed one.
+      const workDirName = fixture.workDir.split(/[\\/]/).pop()!;
+      const second = await runFg(
+        fixture,
+        'echo "[$FOO_EXPORTED][$UNEXPORTED_VAR][$(basename "$(pwd)")]"; persist_fn',
+      );
+      expect(second).toMatchObject({ isError: false });
+      expect(second.output).toContain(`[bar][qux][${workDirName}]`);
+      expect(second.output).toContain('fn-alive');
+    } finally {
+      await disposeFixture(fixture);
+    }
+  }, 30_000);
+
+  it('rolls back cd/export of a failing (exit 1) call', async () => {
+    const fixture = await createStatefulFixture();
+    try {
+      await runFg(fixture, 'export FOO_KEEP=1; echo committed');
+      const failed = await runFg(fixture, 'export FOO_KEEP=2; cd /; exit 1');
+      expect(failed).toMatchObject({ isError: true });
+
+      const check = await runFg(fixture, 'echo "[$FOO_KEEP][$(basename "$(pwd)")]"');
+      const workDirName = fixture.workDir.split(/[\\/]/).pop()!;
+      expect(check.output).toContain(`[1][${workDirName}]`);
+      expect(check.output).not.toContain('[2]');
+    } finally {
+      await disposeFixture(fixture);
+    }
+  }, 30_000);
+
+  it('stays responsive when a foreground task times out into background, and never commits its state', async () => {
+    const fixture = await createStatefulFixture();
+    try {
+      const workDirName = fixture.workDir.split(/[\\/]/).pop()!;
+      // The 1s foreground timeout moves the command to the background; the
+      // shell's foreground slot must be freed immediately so the next command
+      // runs while the detached task is still sleeping.
+      const detached = await runFg(fixture, 'cd / && sleep 2', { timeout: 1 });
+      expect(detached).toMatchObject({
+        isError: false,
+        message: expect.stringContaining('timed out and moved to background'),
+      });
+
+      const responsive = await runFg(fixture, 'echo alive');
+      expect(responsive).toMatchObject({ isError: false });
+      expect(responsive.output).toContain('alive');
+
+      // The detached task later exits 0 — background semantics: its `cd /`
+      // must NOT commit (detach removed its commit flag).
+      await new Promise((resolve) => setTimeout(resolve, 2_500));
+      const check = await runFg(fixture, 'echo "cwd=$(basename "$(pwd)")"');
+      expect(check).toMatchObject({ isError: false });
+      expect(check.output).toContain(`cwd=${workDirName}`);
+    } finally {
+      await disposeFixture(fixture);
+    }
+  }, 30_000);
+
+  describe('state change note', () => {
+    const lastNonEmptyLine = (output: string): string =>
+      output
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0)
+        .at(-1) ?? '';
+
+    it('never reports a cwd change, and the committed cwd steers only the user shell', async () => {
+      const fixture = await createStatefulFixture();
+      try {
+        mkdirSync(join(fixture.workDir, 'state-sub'));
+
+        const before = await runFg(fixture, 'pwd');
+        expect(before).toMatchObject({ isError: false });
+        const oldCwd = lastNonEmptyLine(before.output as string);
+
+        // Only the cwd changed, and cwd is never reported: no note at all.
+        const cd = await runFg(fixture, 'cd state-sub && pwd');
+        expect(cd).toMatchObject({ isError: false });
+        expect(cd.output).toContain(`${oldCwd}/state-sub`);
+        expect(cd.output).not.toContain('[bash state]');
+
+        // The committed cwd steers the user's `!` commands…
+        const user = await runFg(fixture, 'echo "[$(pwd)]"', { userInitiated: true });
+        expect(user).toMatchObject({ isError: false });
+        expect(user.output).toContain('state-sub');
+
+        // …while agent calls keep starting at the session cwd.
+        const agent = await runFg(fixture, 'pwd');
+        expect(agent).toMatchObject({ isError: false });
+        expect(lastNonEmptyLine(agent.output as string)).toBe(oldCwd);
+      } finally {
+        await disposeFixture(fixture);
+      }
+    }, 60_000);
+
+    it('reports exported env var additions, changes, and removals by name', async () => {
+      const fixture = await createStatefulFixture();
+      try {
+        const added = await runFg(fixture, 'export KIMI_STATE_TEST_VAR=1');
+        expect(added).toMatchObject({ isError: false });
+        expect(added.output).toContain('[bash state] env: +KIMI_STATE_TEST_VAR');
+
+        const changed = await runFg(fixture, 'export KIMI_STATE_TEST_VAR=2');
+        expect(changed).toMatchObject({ isError: false });
+        expect(changed.output).toContain('[bash state] env: ~KIMI_STATE_TEST_VAR');
+
+        const removed = await runFg(fixture, 'unset KIMI_STATE_TEST_VAR');
+        expect(removed).toMatchObject({ isError: false });
+        expect(removed.output).toContain('[bash state] env: -KIMI_STATE_TEST_VAR');
+      } finally {
+        await disposeFixture(fixture);
+      }
+    }, 60_000);
+
+    it('reports a conda env change directly, without the conda-internal var noise', async () => {
+      const fixture = await createStatefulFixture();
+      try {
+        const defineFake = await runFg(
+          fixture,
+          'conda() { if [[ "$1" == activate ]]; then export CONDA_DEFAULT_ENV="$2" CONDA_PREFIX="/fake/$2" CONDA_SHLVL=1; export PATH="/fake/$2/bin:$PATH"; else unset CONDA_DEFAULT_ENV CONDA_PREFIX CONDA_SHLVL; fi; }',
+        );
+        expect(defineFake).toMatchObject({ isError: false });
+        // A function definition alone commits no env change, so no note.
+        expect(defineFake.output).not.toContain('[bash state]');
+
+        // Clear any conda env inherited from the test runner's own process
+        // (this dev machine runs the tests with a real conda activated).
+        await runFg(fixture, 'unset CONDA_DEFAULT_ENV CONDA_PREFIX CONDA_SHLVL');
+
+        const activated = await runFg(fixture, 'conda activate bsa');
+        expect(activated).toMatchObject({ isError: false });
+        expect(activated.output).toContain('[bash state] conda=bsa');
+        expect(activated.output).not.toContain('CONDA_PREFIX');
+        expect(activated.output).not.toContain('CONDA_SHLVL');
+        expect(activated.output).not.toContain('~PATH');
+
+        const switched = await runFg(fixture, 'conda activate gpu');
+        expect(switched).toMatchObject({ isError: false });
+        expect(switched.output).toContain('[bash state] conda=gpu');
+
+        const deactivated = await runFg(fixture, 'conda deactivate');
+        expect(deactivated).toMatchObject({ isError: false });
+        expect(deactivated.output).toContain('[bash state] conda=none');
+        expect(deactivated.output).not.toContain('CONDA_PREFIX');
+      } finally {
+        await disposeFixture(fixture);
+      }
+      // Five fg commands (vs three for the sibling tests): each costs several
+      // seconds on this machine, so the suite's usual 30s budget is too tight.
+    }, 90_000);
+
+    it('emits no state note for a failing command and rolls back its cd', async () => {
+      const fixture = await createStatefulFixture();
+      try {
+        const before = await runFg(fixture, 'pwd');
+        expect(before).toMatchObject({ isError: false });
+        const oldCwd = lastNonEmptyLine(before.output as string);
+
+        const failed = await runFg(fixture, 'cd / && false');
+        expect(failed).toMatchObject({ isError: true });
+        expect(failed.output).not.toContain('[bash state]');
+
+        const after = await runFg(fixture, 'pwd');
+        expect(after).toMatchObject({ isError: false });
+        expect(after.output).toContain(oldCwd);
+      } finally {
+        await disposeFixture(fixture);
+      }
+    }, 30_000);
+  });
+
+  describe('durable state replay', () => {
+    // The durable committed-state base: `<snapshotDir>/shell-state.*`.
+    const durableStateBase = (fixture: StatefulFixture): string =>
+      join(fixture.snapshotDir, 'shell-state');
+
+    it('restores committed state after a shell restart', async () => {
+      // A "restart" is a fresh StatefulShell on the same snapshot dir and
+      // work dir (the durable snapshot is the whole state — every command
+      // already runs in a fresh process, so the restart is exactly the next
+      // run). The first fixture's dirs must stay alive for the second one.
+      const first = await createStatefulFixture();
+      try {
+        mkdirSync(join(first.workDir, 'state-sub'));
+        const commit = await runFg(first, 'cd state-sub && export KIMI_RESTORE_VAR=1');
+        expect(commit).toMatchObject({ isError: false });
+        // The env change is reported; the cwd change never is.
+        expect(commit.output).toContain('[bash state] env: +KIMI_RESTORE_VAR');
+        expect(commit.output).not.toContain('cwd=');
+        await first.shell.dispose();
+      } catch (error) {
+        await first.shell.dispose();
+        rmSync(first.workDir, { recursive: true, force: true });
+        rmSync(first.snapshotDir, { recursive: true, force: true });
+        throw error;
+      }
+
+      const second = await createStatefulFixture({
+        snapshotDir: first.snapshotDir,
+        workDir: first.workDir,
+      });
+      try {
+        // The committed cwd is restored for the user's `!` commands — agent
+        // calls would start at the session cwd even after a restart.
+        const check = await runFg(second, 'echo "[$KIMI_RESTORE_VAR][$(pwd)]"', {
+          userInitiated: true,
+        });
+        expect(check).toMatchObject({ isError: false });
+        expect(check.output).toContain('/state-sub');
+        expect(check.output).toContain('[1]');
+        // A successful replay is silent: no note on the fresh shell's first command.
+        expect(check.output).not.toContain('[bash state]');
+      } finally {
+        await disposeFixture(second);
+      }
+    }, 60_000);
+
+    it('restores a conda activation after a shell restart', async () => {
+      const first = await createStatefulFixture();
+      try {
+        await runFg(
+          first,
+          'conda() { if [[ "$1" == activate ]]; then export CONDA_DEFAULT_ENV="$2" CONDA_PREFIX="/fake/$2" CONDA_SHLVL=1; export PATH="/fake/$2/bin:$PATH"; else unset CONDA_DEFAULT_ENV CONDA_PREFIX CONDA_SHLVL; fi; }',
+        );
+        // Clear any conda env inherited from the test runner's own process.
+        await runFg(first, 'unset CONDA_DEFAULT_ENV CONDA_PREFIX CONDA_SHLVL');
+        const activated = await runFg(first, 'conda activate bsa');
+        expect(activated).toMatchObject({ isError: false });
+        expect(activated.output).toContain('[bash state] conda=bsa');
+        await first.shell.dispose();
+      } catch (error) {
+        await first.shell.dispose();
+        rmSync(first.workDir, { recursive: true, force: true });
+        rmSync(first.snapshotDir, { recursive: true, force: true });
+        throw error;
+      }
+
+      const second = await createStatefulFixture({
+        snapshotDir: first.snapshotDir,
+        workDir: first.workDir,
+      });
+      try {
+        const check = await runFg(second, 'echo "$CONDA_DEFAULT_ENV"; declare -F conda');
+        expect(check).toMatchObject({ isError: false });
+        expect(check.output).toContain('bsa');
+        expect(check.output).toContain('conda');
+        // The activation note must not reappear: the restore itself is silent.
+        expect(check.output).not.toContain('[bash state]');
+        expect(check.output).not.toContain('conda=bsa');
+      } finally {
+        await disposeFixture(second);
+      }
+    }, 120_000);
+
+    it('does not rewrite the durable state on a no-op commit', async () => {
+      const fixture = await createStatefulFixture();
+      try {
+        await runFg(fixture, 'export KIMI_DURABLE_VAR=1');
+        // Dumps are fully deterministic: the `declare -p` section iterates
+        // the sorted variable list, every task local is __kimi_-prefixed
+        // (filtered by KEEPVARS), and bash internals are excluded too, so an
+        // unchanged state is byte-identical across commits and `cmp -s`
+        // skips the durable write.
+        const stateFile = `${durableStateBase(fixture)}.state`;
+        const varsFile = `${durableStateBase(fixture)}.vars`;
+        const funcsFile = `${durableStateBase(fixture)}.funcs`;
+        const stateMtimeBefore = statSync(stateFile).mtimeMs;
+        const varsMtimeBefore = statSync(varsFile).mtimeMs;
+        const funcsMtimeBefore = statSync(funcsFile).mtimeMs;
+
+        const noop = await runFg(fixture, 'true');
+        expect(noop).toMatchObject({ isError: false });
+        expect(statSync(stateFile).mtimeMs).toBe(stateMtimeBefore);
+        expect(statSync(varsFile).mtimeMs).toBe(varsMtimeBefore);
+        expect(statSync(funcsFile).mtimeMs).toBe(funcsMtimeBefore);
+      } finally {
+        await disposeFixture(fixture);
+      }
+    }, 60_000);
+
+    it('reports a replay failure but still starts', async () => {
+      const fixture = await createStatefulFixture();
+      try {
+        await runFg(fixture, 'export KIMI_REPLAY_VAR=1');
+        // Sabotage the durable state: a cd to a directory that cannot exist.
+        writeFileSync(
+          `${durableStateBase(fixture)}.state`,
+          'cd /definitely-not-a-real-dir-xyz\n',
+        );
+
+        const check = await runFg(fixture, 'pwd');
+        expect(check).toMatchObject({ isError: false });
+        expect(check.output).toContain('[bash state] replay failed');
+        expect(check.output).toContain('stateful-wd-');
+      } finally {
+        await disposeFixture(fixture);
+      }
+    }, 60_000);
+  });
+
+  it('never commits state from background calls', async () => {
+    const fixture = await createStatefulFixture();
+    try {
+      const started = await runFg(fixture, 'export BG_VAR=hello; echo bg-done', {
+        run_in_background: true,
+        description: 'bg state test',
+      });
+      expect(started).toMatchObject({ isError: false });
+      const taskId = /^task_id: (\S+)/m.exec(started.output as string)?.[1];
+      expect(taskId).toBeDefined();
+      await waitForTerminal(fixture.manager, taskId!);
+
+      const check = await runFg(fixture, 'echo "BG_VAR=[$BG_VAR]"');
+      expect(check.output).toContain('BG_VAR=[]');
+    } finally {
+      await disposeFixture(fixture);
+    }
+  }, 30_000);
+
+  it('keeps the committed state alive after a timeout kill', async () => {
+    const fixture = await createStatefulFixture({ autoBackgroundOnTimeout: false });
+    try {
+      await runFg(fixture, 'export BEFORE_KILL=yes; echo committed');
+
+      const killed = await runFg(fixture, 'export AFTER_KILL=no; sleep 30', { timeout: 1 });
+      expect(killed).toMatchObject({ isError: true });
+      expect(killed.output as string).toContain('killed by timeout');
+
+      const check = await runFg(fixture, 'echo "[$BEFORE_KILL][$AFTER_KILL]"');
+      expect(check.output).toContain('[yes][]');
+    } finally {
+      await disposeFixture(fixture);
+    }
+  }, 30_000);
+
+  it('does not interleave concurrent background and foreground output', async () => {
+    const fixture = await createStatefulFixture();
+    try {
+      const started = await runFg(
+        fixture,
+        'for i in 1 2 3 4 5; do echo "BG-$i"; sleep 0.2; done',
+        { run_in_background: true, description: 'bg interleave test' },
+      );
+      expect(started).toMatchObject({ isError: false });
+      const taskId = /^task_id: (\S+)/m.exec(started.output as string)?.[1];
+      expect(taskId).toBeDefined();
+
+      const fg = await runFg(fixture, 'echo FG_MARK');
+      expect(fg.output).toContain('FG_MARK');
+      expect(fg.output).not.toContain('BG-');
+
+      await waitForTerminal(fixture.manager, taskId!);
+      const bgOutput = await fixture.manager.readOutput(taskId!);
+      expect(bgOutput).toContain('BG-1');
+      expect(bgOutput).toContain('BG-5');
+      expect(bgOutput).not.toContain('FG_MARK');
+    } finally {
+      await disposeFixture(fixture);
+    }
+  }, 30_000);
+
+  it('survives `exec` in a command (epilogue skipped) and keeps prior state', async () => {
+    const fixture = await createStatefulFixture();
+    try {
+      await runFg(fixture, 'export SURVIVOR=1; echo committed');
+      // `exec` replaces the wrapper's bash, so the EXIT-trap epilogue never
+      // runs: the command's own state changes are discarded (silent rollback,
+      // the same degradation the old REAPED path covered with a warning).
+      const execed = await runFg(fixture, 'exec echo replaced');
+      expect(execed.output).toContain('replaced');
+      expect(execed.output).not.toContain('[bash state]');
+
+      const check = await runFg(fixture, 'echo "[$SURVIVOR]"');
+      expect(check.output).toContain('[1]');
+    } finally {
+      await disposeFixture(fixture);
+    }
+  }, 30_000);
+
+  it('sources ~/.bashrc past a `[ -z "$PS1" ] && return` guard', async () => {
+    writeFileSync(
+      join(process.env['HOME']!, '.bashrc'),
+      '[ -z "$PS1" ] && return\nexport KIMI_PS1_BASHRC=loaded\n',
+    );
+    const { tool, shell } = await createStatefulFixture();
+    try {
+      const result = await executeTool(
+        tool,
+        context({ command: 'echo "PS1G=[$KIMI_PS1_BASHRC]"', timeout: 60 }),
+      );
+      expect(result.output).toContain('PS1G=[loaded]');
+    } finally {
+      await shell.dispose();
+      rmSync(join(process.env['HOME']!, '.bashrc'), { force: true });
+    }
+  }, 30_000);
+
+  it('probes the conda hook when the bashrc conda init is interactive-guarded', async () => {
+    const home = process.env['HOME']!;
+    // Ubuntu-style guard: sourcing ~/.bashrc non-interactively returns before
+    // the conda init block (and everything else) below it.
+    writeFileSync(
+      join(home, '.bashrc'),
+      ['case $- in', '  *i*) ;;', '  *) return ;;', 'esac', 'export KIMI_GUARDED_BASHRC=loaded', ''].join(
+        '\n',
+      ),
+    );
+    mkdirSync(join(home, 'anaconda3/etc/profile.d'), { recursive: true });
+    writeFileSync(
+      join(home, 'anaconda3/etc/profile.d/conda.sh'),
+      'conda() { :; }\nexport CONDA_SHLVL=1\n',
+    );
+
+    const { tool, shell } = await createStatefulFixture();
+    try {
+      const result = await executeTool(
+        tool,
+        context({
+          command:
+            'echo "GUARDED=[$KIMI_GUARDED_BASHRC] SHLVL=[$CONDA_SHLVL]"; declare -F conda >/dev/null && echo CONDA_FN=yes || echo CONDA_FN=no',
+          timeout: 60,
+        }),
+      );
+      // The case-$- guard is respected (we don't fake interactivity)…
+      expect(result.output).toContain('GUARDED=[]');
+      // …but the conda hook probe still makes conda usable.
+      expect(result.output).toContain('SHLVL=[1]');
+      expect(result.output).toContain('CONDA_FN=yes');
+    } finally {
+      await shell.dispose();
+      rmSync(join(home, '.bashrc'), { force: true });
+      rmSync(join(home, 'anaconda3'), { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it('renders the stateful tool description (resuming/commit semantics)', () => {
+    const tool = new BashTool(
+      createFakeKaos({ osEnv: posixEnv }),
+      '/workspace',
+      createBackgroundManager().manager,
+      { statefulShell: new StatefulShell('/workspace', '/tmp/x') },
+    );
+
+    expect(tool.description).toContain('stateful');
+    expect(tool.description).toContain('durable snapshot');
+    expect(tool.description).toContain('persist across calls');
+    expect(tool.description).toContain('commit ONLY');
+    expect(tool.description).toContain('roll back');
+    expect(tool.description).toContain('never commit');
+    expect(tool.description).not.toContain('executed in a fresh shell environment');
+    // The background paragraph must stay intact for the description surgery.
+    expect(tool.description).toContain('run_in_background=true');
   });
 });

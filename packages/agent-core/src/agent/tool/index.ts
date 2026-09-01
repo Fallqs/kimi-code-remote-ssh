@@ -1,5 +1,7 @@
 import { uniq } from '@antfu/utils';
 import type { ChatProvider, Tool } from '@moonshot-ai/kosong';
+import { tmpdir } from 'node:os';
+import { join } from 'pathe';
 import picomatch from 'picomatch';
 
 import type { Agent } from '..';
@@ -19,6 +21,7 @@ import { buildSubagentModelDescriptions } from '../../session/subagent-binding';
 import { extendWorkspaceWithSkillRoots } from '../../skill';
 import { fingerprint } from '../llm-request-logger';
 import * as b from '../../tools/builtin';
+import { StatefulShell } from '../../tools/builtin/shell/stateful-shell';
 import type { ToolStore, ToolStoreData, ToolStoreKey } from '../../tools/store';
 import type {
   BuiltinTool,
@@ -92,6 +95,9 @@ export class ToolManager {
    *  the TUI can cancel (Esc / Ctrl+C) a running command. */
   private readonly shellCommandControllers = new Map<string, AbortController>();
 
+  /** Lazily-created per-agent stateful shell (`[bash] stateful = true`). */
+  private statefulShellInstance: StatefulShell | undefined;
+
   constructor(protected readonly agent: Agent) {
     this.attachMcpTools();
     if (agent.config.hasProvider) {
@@ -156,7 +162,13 @@ export class ToolManager {
     const controller = new AbortController();
     if (commandId !== undefined) this.shellCommandControllers.set(commandId, controller);
     try {
-      const execution = await bash.resolveExecution({ command, timeout: SHELL_FOREGROUND_TIMEOUT_S });
+      const execution = await bash.resolveExecution({
+        command,
+        timeout: SHELL_FOREGROUND_TIMEOUT_S,
+        // User `!` command: in stateful mode it runs at the shell's restored
+        // cwd (agent calls start at the session cwd instead).
+        userInitiated: true,
+      });
       if (!('execute' in execution)) {
         const output =
           typeof execution.output === 'string' ? execution.output : 'Command failed.';
@@ -805,6 +817,7 @@ export class ToolManager {
           autoBackgroundOnTimeout:
             this.agent.kimiConfig?.background?.bashAutoBackgroundOnTimeout ?? true,
           backgroundTimeoutS: this.agent.kimiConfig?.background?.bashTaskTimeoutS,
+          statefulShell: this.resolveStatefulShell(cwd),
         }),
         (modelCapabilities.image_in || modelCapabilities.video_in) &&
           new b.ReadMediaFileTool(
@@ -880,6 +893,35 @@ export class ToolManager {
 
   refreshBuiltinTools(): void {
     this.initializeBuiltinTools();
+  }
+
+  /**
+   * Return the per-agent stateful shell when `[bash] stateful = true`,
+   * creating it on first use. When the feature is off, any stale instance
+   * (e.g. after a config reload flipped it off) is disposed.
+   */
+  private resolveStatefulShell(cwd: string): StatefulShell | undefined {
+    if (this.agent.kimiConfig?.bash?.stateful !== true) {
+      if (this.statefulShellInstance !== undefined) void this.disposeStatefulShell();
+      return undefined;
+    }
+    this.statefulShellInstance ??= new StatefulShell(cwd, this.statefulShellSnapshotDir());
+    return this.statefulShellInstance;
+  }
+
+  private statefulShellSnapshotDir(): string {
+    const homedir = this.agent.homedir;
+    if (homedir !== undefined) return join(homedir, 'shell-state');
+    // A standalone Agent has no session dir; fall back to a process-private
+    // tmp dir (same lifetime as the shell itself).
+    return join(tmpdir(), `kimi-shell-state-${String(process.pid)}`);
+  }
+
+  /** Dispose the stateful shell (session close / feature turned off). */
+  async disposeStatefulShell(): Promise<void> {
+    const shell = this.statefulShellInstance;
+    this.statefulShellInstance = undefined;
+    await shell?.dispose();
   }
 
   /**

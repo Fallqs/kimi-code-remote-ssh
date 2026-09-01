@@ -10,6 +10,7 @@ import {
   formatConfigValidationError,
   getDefaultConfig,
   type BackgroundConfig,
+  type BashConfig,
   type ExperimentalConfig,
   type HookDefConfig,
   type ImageConfig,
@@ -319,6 +320,8 @@ export function transformTomlData(data: Record<string, unknown>): Record<string,
       result[targetKey] = transformLoopControlData(value);
     } else if (targetKey === 'background' && isPlainObject(value)) {
       result[targetKey] = transformPlainObject(value);
+    } else if (targetKey === 'bash' && isPlainObject(value)) {
+      result[targetKey] = transformPlainObject(value);
     } else if (targetKey === 'image' && isPlainObject(value)) {
       result[targetKey] = transformPlainObject(value);
     } else if (targetKey === 'experimental' && isPlainObject(value)) {
@@ -506,6 +509,7 @@ export function configToTomlData(config: KimiConfig): Record<string, unknown> {
   setSection(out, 'services', config.services, servicesToToml);
   setSection(out, 'loop_control', config.loopControl, loopControlToToml);
   setSection(out, 'background', config.background, backgroundToToml);
+  setSection(out, 'bash', config.bash, bashToToml);
   setSection(out, 'subagent', config.subagent, subagentToToml);
   setSection(out, 'secondary_model', config.secondaryModel, secondaryModelToToml);
   setSection(out, 'mcp', config.mcp, mcpToToml);
@@ -686,6 +690,14 @@ function backgroundToToml(
 ): Record<string, unknown> {
   const out = cloneRecord(rawBackground);
   for (const [key, value] of Object.entries(background)) {
+    setDefined(out, camelToSnake(key), value);
+  }
+  return out;
+}
+
+function bashToToml(bash: BashConfig, rawBash: unknown): Record<string, unknown> {
+  const out = cloneRecord(rawBash);
+  for (const [key, value] of Object.entries(bash)) {
     setDefined(out, camelToSnake(key), value);
   }
   return out;

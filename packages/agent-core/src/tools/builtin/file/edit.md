@@ -10,4 +10,6 @@ Perform exact replacements in existing files.
 - DO NOT issue consecutive Edit calls on the same file. A previous Edit can invalidate a later Edit's `old_string`, causing `old_string not found`. Read the file again before the next Edit.
 - A write lock serializes same-file edits in response order, but serialization does not make stale `old_string` valid.
 - For pure CRLF files, Read shows LF; use LF in `old_string` and `new_string`, and Edit writes CRLF back.
-- For mixed endings or lone carriage returns, Read shows carriage returns as \r; include actual \r escapes in those positions.
+- For mixed endings or lone carriage returns, Read shows carriage returns as \r; copy the shown \r verbatim — Edit unescapes it to a real carriage return automatically (for both strings) and reports the normalization. In LF or pure CRLF files a literal \r stays two characters.
+- A trailing-newline difference at the end of `old_string` is tolerated and reported; `new_string` is always written literally.
+- If a match fails because `old_string` still carries Read line-number prefixes (`N\t`), the error says so — Edit never strips them automatically; drop them yourself and retry.

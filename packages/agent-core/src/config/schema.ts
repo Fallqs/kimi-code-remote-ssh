@@ -183,6 +183,21 @@ export const BackgroundConfigSchema = z.object({
 
 export type BackgroundConfig = z.infer<typeof BackgroundConfigSchema>;
 
+export const BashConfigSchema = z.object({
+  /**
+   * Run Bash commands through a resuming-based stateful shell: each command
+   * runs in a fresh bash process whose shell state (env vars, cwd, functions,
+   * conda environments) is restored from a durable snapshot and committed
+   * back after a successful foreground call. A foreground call commits its
+   * state changes only when it exits with code 0; failing, killed, and
+   * background calls roll back. Defaults to false (each call gets a fresh
+   * shell).
+   */
+  stateful: z.boolean().optional(),
+});
+
+export type BashConfig = z.infer<typeof BashConfigSchema>;
+
 export const SubagentConfigSchema = z.object({
   /**
    * Per-subagent (`Agent` / `AgentSwarm`, foreground and background) timeout
@@ -362,6 +377,7 @@ export const KimiConfigSchema = z.object({
   extraAgentDirs: z.array(z.string()).optional(),
   loopControl: LoopControlSchema.optional(),
   background: BackgroundConfigSchema.optional(),
+  bash: BashConfigSchema.optional(),
   subagent: SubagentConfigSchema.optional(),
   secondaryModel: SecondaryModelConfigSchema.optional(),
   mcp: McpConfigSchema.optional(),
@@ -380,6 +396,7 @@ const ThinkingConfigPatchSchema = ThinkingConfigSchema.partial();
 const PermissionConfigPatchSchema = PermissionConfigSchema.partial();
 const LoopControlPatchSchema = LoopControlSchema.partial();
 const BackgroundConfigPatchSchema = BackgroundConfigSchema.partial();
+const BashConfigPatchSchema = BashConfigSchema.partial();
 const SubagentConfigPatchSchema = SubagentConfigSchema.partial();
 const SecondaryModelConfigPatchSchema = SecondaryModelConfigSchema.partial();
 const McpConfigPatchSchema = McpConfigSchema.partial();
@@ -411,6 +428,7 @@ export const KimiConfigPatchSchema = z
     extraAgentDirs: z.array(z.string()).optional(),
     loopControl: LoopControlPatchSchema.optional(),
     background: BackgroundConfigPatchSchema.optional(),
+    bash: BashConfigPatchSchema.optional(),
     subagent: SubagentConfigPatchSchema.optional(),
     secondaryModel: SecondaryModelConfigPatchSchema.optional(),
     mcp: McpConfigPatchSchema.optional(),

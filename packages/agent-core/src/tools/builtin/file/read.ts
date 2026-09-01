@@ -11,6 +11,7 @@ import { toInputJsonSchema } from '../../support/input-schema';
 import { literalRulePattern, matchesPathRuleSubject } from '../../support/rule-match';
 import type { WorkspaceConfig } from '../../support/workspace';
 import { makeCarriageReturnsVisible, type LineEndingStyle } from './line-endings';
+import { isTextDecodeError, notReadableTextMessage } from './file-view';
 import readDescriptionTemplate from './read.md?raw';
 
 export const MAX_LINES: number = 1000;
@@ -205,24 +206,8 @@ function isFileNotFoundError(error: unknown): boolean {
   return code === 'ENOENT' || code === 'ENOTDIR';
 }
 
-function isTextDecodeError(error: unknown): boolean {
-  if (typeof error !== 'object' || error === null) return false;
-  const code = (error as { code?: unknown })['code'];
-  if (code === 'ERR_ENCODING_INVALID_ENCODED_DATA') return true;
-  if (!(error instanceof Error)) return false;
-  return /encoded data was not valid|invalid.*encoding|invalid.*utf-?8/i.test(error.message);
-}
-
 function containsNulByte(text: string): boolean {
   return text.includes('\u0000');
-}
-
-function notReadableFileOutput(path: string): string {
-  return (
-    `"${path}" is not readable as UTF-8 text. ` +
-    'If it is an image or video, use ReadMediaFile. ' +
-    'For other binary formats, use Bash or an MCP tool if available.'
-  );
 }
 
 const READ_DESCRIPTION = renderPrompt(readDescriptionTemplate, {
@@ -287,7 +272,7 @@ export class ReadTool implements BuiltinTool<ReadInput> {
       if (fileType.kind === 'unknown') {
         return {
           isError: true,
-          output: notReadableFileOutput(args.path),
+          output: notReadableTextMessage(args.path),
         };
       }
 
@@ -313,7 +298,7 @@ export class ReadTool implements BuiltinTool<ReadInput> {
       );
     } catch (error) {
       if (isTextDecodeError(error)) {
-        return { isError: true, output: notReadableFileOutput(args.path) };
+        return { isError: true, output: notReadableTextMessage(args.path) };
       }
       return {
         isError: true,
@@ -333,7 +318,7 @@ export class ReadTool implements BuiltinTool<ReadInput> {
     if (rangeKaos.scanTextFile !== undefined && rangeKaos.readLineRange !== undefined) {
       const scan = await rangeKaos.scanTextFile(safePath);
       if (scan.hasNul) {
-        return { isError: true, output: notReadableFileOutput(displayPath) };
+        return { isError: true, output: notReadableTextMessage(displayPath) };
       }
       const selectedEntries: ReadLineEntry[] = [];
       let lineNo = lineOffset;
@@ -367,7 +352,7 @@ export class ReadTool implements BuiltinTool<ReadInput> {
 
     for await (const rawLine of this.kaos.readLines(safePath, { errors: 'strict' })) {
       if (containsNulByte(rawLine)) {
-        return { isError: true, output: notReadableFileOutput(displayPath) };
+        return { isError: true, output: notReadableTextMessage(displayPath) };
       }
       currentLineNo += 1;
       updateLineEndingFlags(flags, rawLine);
@@ -421,7 +406,7 @@ export class ReadTool implements BuiltinTool<ReadInput> {
     if (rangeKaos.scanTextFile !== undefined && rangeKaos.readTailLines !== undefined) {
       const scan = await rangeKaos.scanTextFile(safePath);
       if (scan.hasNul) {
-        return { isError: true, output: notReadableFileOutput(displayPath) };
+        return { isError: true, output: notReadableTextMessage(displayPath) };
       }
       const rawLines: string[] = [];
       for await (const rawLine of rangeKaos.readTailLines(safePath, {
@@ -450,7 +435,7 @@ export class ReadTool implements BuiltinTool<ReadInput> {
 
     for await (const rawLine of this.kaos.readLines(safePath, { errors: 'strict' })) {
       if (containsNulByte(rawLine)) {
-        return { isError: true, output: notReadableFileOutput(displayPath) };
+        return { isError: true, output: notReadableTextMessage(displayPath) };
       }
       currentLineNo += 1;
       updateLineEndingFlags(flags, rawLine);

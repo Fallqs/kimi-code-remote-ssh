@@ -41,6 +41,18 @@ export const FLAG_DEFINITIONS = [
     default: false,
     surface: 'core',
   },
+  {
+    // Consumed by the v2 engine (kimi web / kap-server); registered here so the
+    // TUI /experiments panel can persist the [experimental] config override
+    // that the v2 resolver reads. The TUI's own ssh:// workdirs are not gated.
+    id: 'ssh-workdir',
+    title: 'SSH remote workspaces',
+    description:
+      'Allow ssh://[user@]host[:port]/path workspace roots: file and process operations run on the remote host over SSH while session persistence stays local.',
+    env: 'KIMI_CODE_EXPERIMENTAL_SSH_WORKDIR',
+    default: false,
+    surface: 'both',
+  },
 ] as const satisfies readonly FlagDefinitionInput[];
 
 /** Literal union of registered flag ids. */

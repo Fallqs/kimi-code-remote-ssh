@@ -69,6 +69,7 @@ import {
 import { noopTelemetryClient, type TelemetryClient, withTelemetryProperties } from '../telemetry';
 import { SessionSubagentHost } from './subagent-host';
 import { sessionMediaOriginalsDir } from '../tools/support/image-originals';
+import { seedShellStateSnapshot } from '../tools/builtin/shell/stateful-shell';
 import type { ToolServices } from '../tools/support/services';
 import { FlagResolver, type ExperimentalFlagResolver } from '../flags';
 import { ImageLimits } from '../tools/support/image-limits';
@@ -565,6 +566,7 @@ export class Session {
       await this.cancelActiveTurnsOnClose();
       await this.stopBackgroundTasksOnExit();
       await this.drainBackgroundTaskWrites();
+      await this.disposeStatefulShellsOnExit();
       await this.flushMetadata();
       await this.triggerSessionEnd('exit');
     } finally {
@@ -665,6 +667,18 @@ export class Session {
   private async drainBackgroundTaskWrites(): Promise<void> {
     await Promise.all(
       Array.from(this.readyAgents(), (agent) => agent.background.drainWrites()),
+    );
+  }
+
+  /**
+   * Dispose every agent's stateful shell (`[bash] stateful`) on session close:
+   * kills its live tasks (there is no persistent shell process anymore — state
+   * durability lives in the snapshot files). Runs after background tasks are
+   * stopped so task handles settle first.
+   */
+  private async disposeStatefulShellsOnExit(): Promise<void> {
+    await Promise.allSettled(
+      Array.from(this.readyAgents(), (agent) => agent.tools.disposeStatefulShell()),
     );
   }
 
@@ -820,6 +834,16 @@ export class Session {
     const id = type === 'main' ? 'main' : this.nextGeneratedAgentId();
     const homedir = config.homedir ?? join(this.options.homedir, 'agents', id);
     const parentAgentId = options.parentAgentId ?? null;
+    if (parentAgentId !== null) {
+      const parentHomedir =
+        this.metadata.agents[parentAgentId]?.homedir ??
+        join(this.options.homedir, 'agents', parentAgentId);
+      try {
+        await seedShellStateSnapshot(parentHomedir, homedir);
+      } catch (error) {
+        this.log.warn('failed to seed subagent shell state', { parentAgentId, error });
+      }
+    }
     const agent = this.instantiateAgent(id, homedir, type, config, parentAgentId);
     if (options.profile) {
       await this.bootstrapAgentProfile(agent, options.profile);

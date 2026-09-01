@@ -6,6 +6,13 @@
  * Errors when `old_string` is not found or not unique (when
  * `replace_all=false`). Path access policy is resolved before any
  * Kaos I/O.
+ *
+ * Matching is view-aware (see `./file-view`): the exact `old_string`
+ * always wins; only after an exact miss does it try the deterministic
+ * fallback candidates (`\r` unescaping for mixed line-ending files, one
+ * trailing `\n` ignored), and a fallback hit is reported in the output.
+ * Read line-number prefixes are never stripped — they only add a
+ * diagnostic hint to the not-found error.
  */
 
 import type { Kaos } from '@moonshot-ai/kaos';
@@ -19,6 +26,15 @@ import { toInputJsonSchema } from '../../support/input-schema';
 import { literalRulePattern, matchesPathRuleSubject } from '../../support/rule-match';
 import type { WorkspaceConfig } from '../../support/workspace';
 import { materializeModelText, toModelTextView } from './line-endings';
+import {
+  buildEditMatchCandidates,
+  hasLineNumberPrefixes,
+  isTextDecodeError,
+  NORMALIZATION_UNESCAPED_CR,
+  notReadableTextMessage,
+  unescapeVisibleCarriageReturns,
+} from './file-view';
+import type { LineEndingStyle } from './line-endings';
 import EDIT_DESCRIPTION from './edit.md?raw';
 
 // `old_string` must be non-empty: the non-replace_all branch walks
@@ -34,7 +50,7 @@ export const EditInputSchema = z.object({
     .string()
     .min(1)
     .describe(
-      'Exact content to replace from the Read output view, without the line-number prefix. Use LF for pure CRLF files; use actual \\r escapes where Read shows \\r.',
+      'Exact content to replace from the Read output view, without the line-number prefix. Use LF for pure CRLF files; where Read shows \\r (mixed endings), copy the shown \\r verbatim — it is unescaped automatically. One trailing \\n difference is tolerated.',
     ),
   new_string: z
     .string()
@@ -53,6 +69,27 @@ function replaceOnceLiteral(content: string, oldString: string, newString: strin
   const index = content.indexOf(oldString);
   if (index === -1) return content;
   return content.slice(0, index) + newString + content.slice(index + oldString.length);
+}
+
+function notFoundMessage(
+  path: string,
+  oldString: string,
+  lineEndingStyle: LineEndingStyle,
+): string {
+  let message = `old_string not found in ${path}, the file contents may be out of date. Please use the Read Tool to reload the content.
+`;
+  if (hasLineNumberPrefixes(oldString)) {
+    message +=
+      ' old_string appears to include Read line-number prefixes (`N\\t`). ' +
+      'Drop the line-number prefix and tab, then retry — Edit never strips them automatically.';
+  }
+  if (oldString.includes('\\r') && lineEndingStyle !== 'mixed') {
+    const style = lineEndingStyle === 'crlf' ? 'CRLF' : 'LF';
+    message +=
+      ` The file uses ${style} line endings; a literal \\r in old_string matches the two ` +
+      'characters backslash + r, not a carriage return.';
+  }
+  return message;
 }
 
 export class EditTool implements BuiltinTool<EditInput> {
@@ -102,58 +139,78 @@ export class EditTool implements BuiltinTool<EditInput> {
 
     try {
       const raw = await this.kaos.readText(safePath);
+      if (raw.includes('\u0000')) {
+        return { isError: true, output: notReadableTextMessage(args.path) };
+      }
       const modelView = toModelTextView(raw);
       const content = modelView.text;
       const replaceAll = args.replace_all ?? false;
+      const candidates = buildEditMatchCandidates(args.old_string, modelView.lineEndingStyle);
 
-      if (!replaceAll) {
-        let count = 0;
-        let pos = 0;
-        while (pos < content.length) {
-          const idx = content.indexOf(args.old_string, pos);
-          if (idx === -1) break;
-          count++;
-          pos = idx + args.old_string.length;
+      for (const candidate of candidates) {
+        // new_string receives the same `\r` unescaping as the matched
+        // old_string candidate; the trailing-`\n` fallback never touches it.
+        const newString = candidate.normalizations.includes(NORMALIZATION_UNESCAPED_CR)
+          ? unescapeVisibleCarriageReturns(args.new_string)
+          : args.new_string;
+        const report =
+          candidate.normalizations.length > 0
+            ? ` (matched after normalizing: ${candidate.normalizations.join('; ')})`
+            : '';
+
+        if (!replaceAll) {
+          let count = 0;
+          let pos = 0;
+          while (pos < content.length) {
+            const idx = content.indexOf(candidate.text, pos);
+            if (idx === -1) break;
+            count++;
+            pos = idx + candidate.text.length;
+          }
+
+          if (count === 0) continue;
+          if (count > 1) {
+            return {
+              isError: true,
+              output:
+                `old_string is not unique in ${args.path} (found ${String(count)} occurrences). ` +
+                'To replace every occurrence, set replace_all=true. To replace only one occurrence, include more surrounding context in old_string.',
+            };
+          }
+
+          const newContent = replaceOnceLiteral(content, candidate.text, newString);
+          await this.kaos.writeText(
+            safePath,
+            materializeModelText(newContent, modelView.lineEndingStyle),
+          );
+          return { output: `Replaced 1 occurrence in ${args.path}${report}` };
         }
 
-        if (count === 0) {
-          return { isError: true, output: `old_string not found in ${args.path}, the file contents may be out of date. Please use the Read Tool to reload the content.
-` };
-        }
-        if (count > 1) {
-          return {
-            isError: true,
-            output:
-              `old_string is not unique in ${args.path} (found ${String(count)} occurrences). ` +
-              'To replace every occurrence, set replace_all=true. To replace only one occurrence, include more surrounding context in old_string.',
-          };
-        }
+        const parts = content.split(candidate.text);
+        const replacementCount = parts.length - 1;
+        if (replacementCount === 0) continue;
 
-        const newContent = replaceOnceLiteral(content, args.old_string, args.new_string);
+        const newContent = parts.join(newString);
         await this.kaos.writeText(
           safePath,
           materializeModelText(newContent, modelView.lineEndingStyle),
         );
-        return { output: `Replaced 1 occurrence in ${args.path}` };
+        return {
+          output: `Replaced ${String(replacementCount)} occurrences in ${args.path}${report}`,
+        };
       }
 
-      const parts = content.split(args.old_string);
-      const replacementCount = parts.length - 1;
-      if (replacementCount === 0) {
-        return { isError: true, output: `old_string not found in ${args.path}, the file contents may be out of date. Please use the Read Tool to reload the content.
-` };
-      }
-
-      const newContent = parts.join(args.new_string);
-      await this.kaos.writeText(
-        safePath,
-        materializeModelText(newContent, modelView.lineEndingStyle),
-      );
-      return { output: `Replaced ${String(replacementCount)} occurrences in ${args.path}` };
+      return {
+        isError: true,
+        output: notFoundMessage(args.path, args.old_string, modelView.lineEndingStyle),
+      };
     } catch (error) {
       const code = (error as { code?: unknown } | null)?.code;
       if (code === 'EISDIR') {
         return { isError: true, output: `${args.path} is not a file.` };
+      }
+      if (isTextDecodeError(error)) {
+        return { isError: true, output: notReadableTextMessage(args.path) };
       }
       return {
         isError: true,

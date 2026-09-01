@@ -382,4 +382,181 @@ describe('EditTool', () => {
     expect(result.isError).toBeFalsy();
     expect(writeText).toHaveBeenCalledWith('/workspace-sneaky/test.txt', 'new');
   });
+
+  describe('view-aware matching', () => {
+    it('unescapes the Read-visible \\r for mixed line ending files and reports it', async () => {
+      const writeText = vi.fn().mockResolvedValue(0);
+      const tool = new EditTool(
+        createFakeKaos({
+          readText: vi.fn().mockResolvedValue('alpha\r\nbeta\ngamma\r\n'),
+          writeText,
+        }),
+        PERMISSIVE_WORKSPACE,
+      );
+
+      const result = await executeTool(tool,
+        context({ path: '/tmp/a.txt', old_string: 'alpha\\r\nbeta', new_string: 'one\\r\ntwo' }),
+      );
+
+      expect(result.output).toContain('Replaced 1 occurrence');
+      expect(result.output).toContain('matched after normalizing: unescaped \\r');
+      expect(writeText).toHaveBeenCalledWith('/tmp/a.txt', 'one\r\ntwo\ngamma\r\n');
+    });
+
+    it('prefers the exact match over the \\r-unescaped candidate', async () => {
+      const writeText = vi.fn().mockResolvedValue(0);
+      const tool = new EditTool(
+        createFakeKaos({
+          readText: vi.fn().mockResolvedValue('has \\r and \r'),
+          writeText,
+        }),
+        PERMISSIVE_WORKSPACE,
+      );
+
+      const result = await executeTool(tool,
+        context({ path: '/tmp/a.txt', old_string: '\\r', new_string: 'X' }),
+      );
+
+      expect(result.output).toContain('Replaced 1 occurrence');
+      expect(result.output).not.toContain('matched after normalizing');
+      expect(writeText).toHaveBeenCalledWith('/tmp/a.txt', 'has X and \r');
+    });
+
+    it('keeps a literal \\r as two characters in LF files', async () => {
+      const writeText = vi.fn().mockResolvedValue(0);
+      const tool = new EditTool(
+        createFakeKaos({
+          readText: vi.fn().mockResolvedValue('a \\r b'),
+          writeText,
+        }),
+        PERMISSIVE_WORKSPACE,
+      );
+
+      const result = await executeTool(tool,
+        context({ path: '/tmp/a.txt', old_string: '\\r', new_string: 'X' }),
+      );
+
+      expect(result.output).toContain('Replaced 1 occurrence');
+      expect(writeText).toHaveBeenCalledWith('/tmp/a.txt', 'a X b');
+    });
+
+    it('tolerates one extra trailing newline in old_string and reports it', async () => {
+      const writeText = vi.fn().mockResolvedValue(0);
+      const tool = new EditTool(
+        createFakeKaos({
+          readText: vi.fn().mockResolvedValue('alpha beta'),
+          writeText,
+        }),
+        PERMISSIVE_WORKSPACE,
+      );
+
+      const result = await executeTool(tool,
+        context({ path: '/tmp/a.txt', old_string: 'alpha beta\n', new_string: 'done' }),
+      );
+
+      expect(result.output).toContain('Replaced 1 occurrence');
+      expect(result.output).toContain('ignored trailing newline in old_string');
+      expect(writeText).toHaveBeenCalledWith('/tmp/a.txt', 'done');
+    });
+
+    it('still reports not unique when a fallback candidate matches several times', async () => {
+      const writeText = vi.fn().mockResolvedValue(0);
+      const tool = new EditTool(
+        createFakeKaos({
+          readText: vi.fn().mockResolvedValue('x\ry x\ry'),
+          writeText,
+        }),
+        PERMISSIVE_WORKSPACE,
+      );
+
+      const result = await executeTool(tool,
+        context({ path: '/tmp/a.txt', old_string: 'x\\ry', new_string: 'z' }),
+      );
+
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain('not unique');
+      expect(writeText).not.toHaveBeenCalled();
+    });
+
+    it('diagnoses Read line-number prefixes on a failed match without editing', async () => {
+      const writeText = vi.fn().mockResolvedValue(0);
+      const tool = new EditTool(
+        createFakeKaos({
+          readText: vi.fn().mockResolvedValue('alpha\nbeta'),
+          writeText,
+        }),
+        PERMISSIVE_WORKSPACE,
+      );
+
+      const result = await executeTool(tool,
+        context({ path: '/tmp/a.txt', old_string: '1\talpha\n2\tbeta', new_string: 'one\ntwo' }),
+      );
+
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain('old_string not found');
+      expect(result.output).toContain('line-number prefixes');
+      expect(writeText).not.toHaveBeenCalled();
+    });
+
+    it('diagnoses a literal \\r against a non-mixed file on a failed match', async () => {
+      const writeText = vi.fn().mockResolvedValue(0);
+      const tool = new EditTool(
+        createFakeKaos({
+          readText: vi.fn().mockResolvedValue('alpha beta'),
+          writeText,
+        }),
+        PERMISSIVE_WORKSPACE,
+      );
+
+      const result = await executeTool(tool,
+        context({ path: '/tmp/a.txt', old_string: 'alpha\\rbeta', new_string: 'x' }),
+      );
+
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain('LF line endings');
+      expect(writeText).not.toHaveBeenCalled();
+    });
+
+    it('refuses files containing NUL bytes with the Read wording', async () => {
+      const writeText = vi.fn().mockResolvedValue(0);
+      const tool = new EditTool(
+        createFakeKaos({
+          readText: vi.fn().mockResolvedValue('abc\u0000def'),
+          writeText,
+        }),
+        PERMISSIVE_WORKSPACE,
+      );
+
+      const result = await executeTool(tool,
+        context({ path: '/tmp/a.txt', old_string: 'abc', new_string: 'x' }),
+      );
+
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain('is not readable as UTF-8 text');
+      expect(writeText).not.toHaveBeenCalled();
+    });
+
+    it('maps strict decode failures to the Read not-readable wording', async () => {
+      const writeText = vi.fn().mockResolvedValue(0);
+      const tool = new EditTool(
+        createFakeKaos({
+          readText: vi.fn().mockRejectedValue(
+            Object.assign(new Error('The encoded data was not valid for encoding utf-8'), {
+              code: 'ERR_ENCODING_INVALID_ENCODED_DATA',
+            }),
+          ),
+          writeText,
+        }),
+        PERMISSIVE_WORKSPACE,
+      );
+
+      const result = await executeTool(tool,
+        context({ path: '/tmp/a.txt', old_string: 'abc', new_string: 'x' }),
+      );
+
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain('is not readable as UTF-8 text');
+      expect(writeText).not.toHaveBeenCalled();
+    });
+  });
 });

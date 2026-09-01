@@ -12,6 +12,12 @@
  *
  * Execution goes through Kaos, never directly via node:child_process.
  *
+ * Stateful mode (`[bash] stateful = true`): an injected `StatefulShell`
+ * replaces `spawn()` — every command runs in a fresh bash process whose state
+ * (cwd, vars, functions, conda env) is restored from a durable snapshot and
+ * committed back on success (see stateful-shell.ts). Everything downstream
+ * (task registration, timeouts, output caps) is unchanged.
+ *
  * Hardening:
  *   - `args.timeout` (seconds) and the ambient `signal` both stop the
  *     manager-owned process task on either edge.
@@ -35,7 +41,9 @@ import {
   type ExecutableToolResultBuilderResult,
   ToolResultBuilder,
 } from '../../support/result-builder';
+import bashStatefulDescriptionTemplate from './bash-stateful.md?raw';
 import bashDescriptionTemplate from './bash.md?raw';
+import type { StatefulShell } from './stateful-shell';
 
 const MS_PER_SECOND = 1000;
 const DEFAULT_TIMEOUT_S = 60;
@@ -101,6 +109,20 @@ export const BashOutputSchema = z.object({
 export type BashInput = z.Infer<typeof BashInputSchema>;
 export type BashOutput = z.Infer<typeof BashOutputSchema>;
 
+/**
+ * The input `resolveExecution` actually accepts: the model-facing
+ * `BashInput` plus internal invocation extras that are NEVER part of the
+ * model-facing JSON schema — they are set only by in-process callers.
+ */
+export type BashRunInput = BashInput & {
+  /**
+   * Set by the user `!` shell-command path. In stateful mode an omitted
+   * `cwd` then runs at the shell's restored snapshot cwd; agent calls
+   * (unset) start at the session cwd instead.
+   */
+  readonly userInitiated?: boolean;
+};
+
 const SHELL_TIMEOUT_VARS = {
   DEFAULT_TIMEOUT_S,
   DEFAULT_BACKGROUND_TIMEOUT_S,
@@ -129,8 +151,11 @@ async function disposeProcess(proc: KaosProcess): Promise<void> {
   }
 }
 
-function renderBashDescription(shellName: string): string {
-  return renderPrompt(bashDescriptionTemplate, { ...SHELL_TIMEOUT_VARS, SHELL_NAME: shellName });
+function renderBashDescription(shellName: string, stateful: boolean): string {
+  return renderPrompt(stateful ? bashStatefulDescriptionTemplate : bashDescriptionTemplate, {
+    ...SHELL_TIMEOUT_VARS,
+    SHELL_NAME: shellName,
+  });
 }
 
 function withoutBackgroundDescription(description: string): string {
@@ -207,6 +232,12 @@ export class BashTool implements BuiltinTool<BashInput> {
   private readonly autoBackgroundOnTimeout: boolean;
 
   /**
+   * When set, commands run through the per-agent stateful shell
+   * (`[bash] stateful = true`) instead of a fresh shell per call.
+   */
+  private readonly statefulShell?: StatefulShell;
+
+  /**
    * Default deadline for background tasks when the call omits `timeout`, and
    * the re-armed deadline for foreground commands moved to the background.
    * `undefined` arms no timer at all (`background.bash_task_timeout_s = 0`).
@@ -226,15 +257,21 @@ export class BashTool implements BuiltinTool<BashInput> {
        * {@link DEFAULT_BACKGROUND_TIMEOUT_S} when unset.
        */
       backgroundTimeoutS?: number;
+      /** Stateful-shell executor injected when `[bash] stateful = true`. */
+      statefulShell?: StatefulShell;
     },
   ) {
     this.isWindowsBash = this.kaos.osEnv.osKind === 'Windows';
     this.allowBackground = options?.allowBackground ?? true;
     this.autoBackgroundOnTimeout = options?.autoBackgroundOnTimeout ?? true;
+    this.statefulShell = options?.statefulShell;
     const backgroundTimeoutS = options?.backgroundTimeoutS ?? DEFAULT_BACKGROUND_TIMEOUT_S;
     this.backgroundTimeoutMs =
       backgroundTimeoutS === 0 ? undefined : backgroundTimeoutS * MS_PER_SECOND;
-    const rendered = renderBashDescription(this.kaos.osEnv.shellName);
+    const rendered = renderBashDescription(
+      this.kaos.osEnv.shellName,
+      this.statefulShell !== undefined,
+    );
     const withEffectiveDefault =
       this.backgroundTimeoutMs === undefined
         ? withoutBackgroundDefaultTimeout(rendered)
@@ -250,7 +287,7 @@ export class BashTool implements BuiltinTool<BashInput> {
         : toInputJsonSchema(BashInputSchema);
   }
 
-  resolveExecution(args: BashInput): ToolExecution {
+  resolveExecution(args: BashRunInput): ToolExecution {
     const preview = args.command.length > 50 ? `${args.command.slice(0, 50)}…` : args.command;
     return {
       description: args.run_in_background
@@ -308,7 +345,7 @@ export class BashTool implements BuiltinTool<BashInput> {
   }
 
   private async execution(
-    args: BashInput,
+    args: BashRunInput,
     signal: AbortSignal,
     onUpdate?: ((update: ToolUpdate) => void) | undefined,
     onForegroundTaskStart?: ((taskId: string) => void) | undefined,
@@ -330,7 +367,17 @@ export class BashTool implements BuiltinTool<BashInput> {
     const builder = new ToolResultBuilder();
     let proc: KaosProcess;
     try {
-      proc = await this.spawn(effectiveCwd, command);
+      proc =
+        this.statefulShell === undefined
+          ? await this.spawn(effectiveCwd, command)
+          : // Stateful semantics: a user `!` command with an omitted cwd runs
+            // at the shell's restored cwd; an agent call with an omitted cwd
+            // starts at the session cwd (only an explicit cwd arg steers it).
+            await this.statefulShell.runTask({
+              command,
+              cwd: args.userInitiated === true ? args.cwd : (args.cwd ?? this.cwd),
+              background: startsInBackground,
+            });
     } catch (error) {
       return {
         isError: true,

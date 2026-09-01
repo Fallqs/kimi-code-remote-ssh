@@ -87,6 +87,14 @@ export class ProcessBackgroundTask implements BackgroundTask {
     }
   }
 
+  onDetach(): void {
+    // Stateful-shell task handles downgrade to background semantics on detach
+    // (the commit flag is removed so the running task can never commit state,
+    // and the shell's foreground slot is freed); plain spawned processes need
+    // nothing on detach.
+    (this.proc as { detach?: () => void }).detach?.();
+  }
+
   toInfo(base: BackgroundTaskInfoBase): ProcessBackgroundTaskInfo {
     return {
       ...base,

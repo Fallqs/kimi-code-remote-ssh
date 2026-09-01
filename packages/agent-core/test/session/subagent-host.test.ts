@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 
@@ -1824,6 +1824,61 @@ describe('Session.createAgent', () => {
 
     const sub = await session.createAgent({ type: 'sub' }, { parentAgentId: main.id });
     expect(sub.agent.mcp).toBe(session.mcp);
+  });
+
+  it('seeds the subagent shell state from the parent snapshot at creation', async () => {
+    const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-seed-shell-state-'));
+    tempDirs.push(sessionDir);
+    const parentSnap = join(sessionDir, 'agents', 'main', 'shell-state');
+    await mkdir(join(parentSnap, 'wrappers'), { recursive: true });
+    await writeFile(join(parentSnap, 'shell-state.state'), 'declare -- FOO="1"\n');
+    await writeFile(join(parentSnap, 'shell-state.vars'), 'FOO\n');
+    await writeFile(join(parentSnap, 'shell-state.funcs'), 'my_func\n');
+    await writeFile(join(parentSnap, 'wrappers', 'task-1.sh'), '#!/bin/bash\n');
+    await writeFile(join(parentSnap, 'task-1.commit-ok'), '');
+    const session = new Session({
+      kaos: createFakeKaos({
+        mkdir: vi.fn().mockResolvedValue(undefined),
+        writeText: vi.fn().mockResolvedValue(0),
+      }),
+      homedir: sessionDir,
+      rpc: createSessionRpc(),
+      initializeMainAgent: false,
+    });
+
+    await session.createAgent({ type: 'main' });
+    const child = await session.createAgent({ type: 'sub' }, { parentAgentId: 'main' });
+
+    const childSnap = join(sessionDir, 'agents', child.id, 'shell-state');
+    expect(await readFile(join(childSnap, 'shell-state.state'), 'utf8')).toBe(
+      'declare -- FOO="1"\n',
+    );
+    expect(await readFile(join(childSnap, 'shell-state.vars'), 'utf8')).toBe('FOO\n');
+    expect(await readFile(join(childSnap, 'shell-state.funcs'), 'utf8')).toBe('my_func\n');
+    expect((await readdir(childSnap)).toSorted()).toEqual([
+      'shell-state.funcs',
+      'shell-state.state',
+      'shell-state.vars',
+    ]);
+  });
+
+  it('starts the subagent shell cold when the parent has no snapshot', async () => {
+    const sessionDir = await mkdtemp(join(tmpdir(), 'kimi-seed-shell-state-'));
+    tempDirs.push(sessionDir);
+    const session = new Session({
+      kaos: createFakeKaos({
+        mkdir: vi.fn().mockResolvedValue(undefined),
+        writeText: vi.fn().mockResolvedValue(0),
+      }),
+      homedir: sessionDir,
+      rpc: createSessionRpc(),
+      initializeMainAgent: false,
+    });
+
+    await session.createAgent({ type: 'main' });
+    const child = await session.createAgent({ type: 'sub' }, { parentAgentId: 'main' });
+
+    await expect(readdir(join(sessionDir, 'agents', child.id, 'shell-state'))).rejects.toThrow();
   });
 });
 
