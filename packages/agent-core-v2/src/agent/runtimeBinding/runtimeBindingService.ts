@@ -32,7 +32,11 @@ export class AgentRuntimeBindingService implements IAgentRuntimeBindingService {
   ) {
     this.state.contributeState(agentRuntimeBindingKey);
     this.state.contributeState(runtimeBindingKey);
-    const initial = this.state.get(runtimeBindingKey) ?? seed.binding;
+    const replayedAtInit = this.state.get(runtimeBindingKey);
+    const initial =
+      replayedAtInit !== undefined && replayedAtInit.workspaceId === this.session.workspaceId
+        ? replayedAtInit
+        : seed.binding;
     this.assertSessionWorkspace(initial);
     this.state.set(agentRuntimeBindingKey, initial);
     this.restoreHook = dispatcher.hooks.onDidRestore.register('agent-runtime-binding', async (_ctx, next) => {
@@ -42,8 +46,9 @@ export class AgentRuntimeBindingService implements IAgentRuntimeBindingService {
           new RuntimeSetBinding({ ...this.current, agentId: this.scopeContext.agentId }),
         );
       } else {
-        this.assertSessionWorkspace(replayed);
-        this.state.set(agentRuntimeBindingKey, replayed);
+        const binding = replayed.workspaceId === this.session.workspaceId ? replayed : seed.binding;
+        this.assertSessionWorkspace(binding);
+        this.state.set(agentRuntimeBindingKey, binding);
       }
       await next();
     });
