@@ -4,6 +4,7 @@ import { IInstantiationService } from '#/_base/di/instantiation';
 import type { InstantiationService } from '#/_base/di/instantiationService';
 import { Disposable } from '#/_base/di/lifecycle';
 import { Emitter } from '#/_base/event';
+import { ILogService } from '#/_base/log/log';
 import { Error2, ErrorCodes } from '#/errors';
 import { LifecycleScope } from '#/app/scopes';
 import {
@@ -43,6 +44,10 @@ import { IWireService } from '#/wire/wire';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
+import { seedShellStateFromParent } from '#/agent/tools/os/bash/seedShellState';
+import { IHostFileSystem } from '#/os/interface/hostFileSystem';
+import { IRuntimeResolver } from '#/workspace/workspaceInstance/workspaceInstanceManager';
+import { remoteSessionDir } from '#/workspace/workspaceSsh/remoteSessionDir';
 import type { AgentContext } from '#/agent/agentContext/agentContext';
 
 import { ManagedAgent } from './managedAgent';
@@ -52,6 +57,7 @@ import {
   type CreateAgentOptions,
   type ForkAgentOptions,
   IAgentLifecycleService,
+  MAIN_AGENT_ID,
 } from './agentLifecycle';
 
 let nextAgentId = 0;
@@ -86,6 +92,9 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IConfigService private readonly config: IConfigService,
     @ITelemetryService private readonly telemetry: ITelemetryService,
+    @ILogService private readonly log: ILogService,
+    @IHostFileSystem private readonly hostFs: IHostFileSystem,
+    @IRuntimeResolver private readonly runtimeResolver: IRuntimeResolver,
   ) {
     super();
   }
@@ -186,6 +195,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         forkedFrom: opts.forkedFrom,
         labels: opts.labels,
       });
+      await this.seedShellState(agentId, opts);
       this.onDidCreateEmitter.fire(agent);
       didCreate = true;
       this.onDidCreateScopeEmitter.fire({ context: agent, handle });
@@ -217,6 +227,46 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       if (!finalizerArmed) eventBus?.deactivateAgent(agent);
       if (didCreate) this.onDidCloseEmitter.fire(agent);
       throw error;
+    }
+  }
+
+  private async seedShellState(agentId: string, opts: CreateAgentOptions): Promise<void> {
+    const parentAgentId =
+      opts.labels?.['parentAgentId'] ?? (agentId === MAIN_AGENT_ID ? undefined : MAIN_AGENT_ID);
+    if (parentAgentId === undefined) return;
+    try {
+      if (this.ctx.remoteCwd !== undefined) {
+        const lease = this.runtimeResolver.acquire(
+          { workspaceId: this.ctx.workspaceId, runtimeId: 'local' },
+          ['fs'],
+        );
+        try {
+          const rt = lease.runtime;
+          const fs = rt.fs;
+          if (fs === undefined) return;
+          await seedShellStateFromParent({
+            fs,
+            parentAgentId,
+            childAgentId: agentId,
+            sessionDir: remoteSessionDir(rt.environment.homeDir, this.ctx.sessionId),
+          });
+        } finally {
+          lease.dispose();
+        }
+        return;
+      }
+      await seedShellStateFromParent({
+        fs: this.hostFs,
+        parentAgentId,
+        childAgentId: agentId,
+        sessionDir: this.ctx.sessionDir,
+      });
+    } catch (error) {
+      this.log.warn('failed to seed subagent shell state', {
+        parentAgentId,
+        childAgentId: agentId,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 

@@ -1,3 +1,7 @@
+import { mkdtemp, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+
+import { join } from 'pathe';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
@@ -10,6 +14,7 @@ import { TestInstantiationService } from '#/_base/di/test';
 import { Event } from '#/_base/event';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import '#/agent/profile/profileService';
+import { seedShellStateFromParent } from '#/agent/tools/os/bash/seedShellState';
 import { ProfileBind } from '#/agent/profile/profileOps';
 import { TOWER_WORKER_PROFILE } from '#/features/tower/tower';
 import { IAgentAgentsMdReminderService } from '#/agent/agentsMdReminder/agentsMdReminder';
@@ -1392,5 +1397,156 @@ describe('AgentLifecycleService', () => {
 
     expect(second).toBe(first);
     expect(registerAgent).toHaveBeenCalledTimes(1);
+  });
+
+  describe('shell-state seeding', () => {
+    let sessionDir: string;
+
+    beforeEach(async () => {
+      sessionDir = await mkdtemp(join(tmpdir(), 'kimi-agentLifecycle-seed-'));
+      ix.stub(ISessionContext, {
+        _serviceBrand: undefined,
+        sessionId: 'sess_test',
+        workspaceId: 'ws_test',
+        sessionDir,
+        metaScope: 'test',
+        scope: (subKey?: string) =>
+          subKey === undefined || subKey === ''
+            ? 'sessions/ws_test/sess_test'
+            : `sessions/ws_test/sess_test/${subKey}`,
+      } as unknown as ISessionContext);
+      ix.stub(IHostFileSystem, nodeHostFs());
+    });
+
+    it('seeds the child shell-state from the parent snapshot at creation', async () => {
+      const parentSnap = join(sessionDir, 'agents', 'main', 'shell-state');
+      await mkdir(parentSnap, { recursive: true });
+      await writeFile(join(parentSnap, 'shell-state.state'), 'declare -- FOO="1"\n');
+      await writeFile(join(parentSnap, 'shell-state.vars'), 'FOO\n');
+      await writeFile(join(parentSnap, 'shell-state.funcs'), 'my_func\n');
+      const svc = ix.get(IAgentLifecycleService);
+      await svc.create({ agentId: 'main' });
+
+      const child = await svc.create({ labels: { parentAgentId: 'main' } });
+
+      const childSnap = join(sessionDir, 'agents', child.agentId, 'shell-state');
+      expect(await readFile(join(childSnap, 'shell-state.state'), 'utf8')).toBe(
+        'declare -- FOO="1"\n',
+      );
+      expect(await readFile(join(childSnap, 'shell-state.vars'), 'utf8')).toBe('FOO\n');
+      expect(await readFile(join(childSnap, 'shell-state.funcs'), 'utf8')).toBe('my_func\n');
+    });
+
+    it('does not create the child shell-state dir when the parent has no snapshot', async () => {
+      const svc = ix.get(IAgentLifecycleService);
+      await svc.create({ agentId: 'main' });
+
+      const child = await svc.create({});
+
+      await expect(stat(join(sessionDir, 'agents', child.agentId, 'shell-state'))).rejects.toThrow();
+    });
+
+    it('creates the agent even when the seed copy fails', async () => {
+      const parentSnap = join(sessionDir, 'agents', 'main', 'shell-state');
+      await mkdir(parentSnap, { recursive: true });
+      await writeFile(join(parentSnap, 'shell-state.state'), 'declare -- FOO="1"\n');
+      ix.stub(IHostFileSystem, {
+        ...nodeHostFs(),
+        writeBytes: async () => {
+          throw new Error('disk full');
+        },
+      } as unknown as IHostFileSystem);
+      const svc = ix.get(IAgentLifecycleService);
+      await svc.create({ agentId: 'main' });
+
+      const child = await svc.create({});
+
+      expect(svc.get(child.agentId)).toBe(child);
+    });
+  });
+});
+
+function nodeHostFs(): IHostFileSystem {
+  return {
+    stat: (path: string) => stat(path),
+    mkdir: async (path: string) => {
+      await mkdir(path, { recursive: true });
+    },
+    readBytes: async (path: string) => new Uint8Array(await readFile(path)),
+    writeBytes: async (path: string, data: Uint8Array) => {
+      await writeFile(path, data);
+    },
+  } as unknown as IHostFileSystem;
+}
+
+describe('seedShellStateFromParent', () => {
+  const seedArgs = {
+    parentAgentId: 'main',
+    childAgentId: 'agent-0',
+    sessionDir: '/sessions/sess_test',
+  };
+
+  function memoryFs(): {
+    readonly files: Map<string, Uint8Array>;
+    readonly dirs: string[];
+    readonly fs: IHostFileSystem;
+  } {
+    const files = new Map<string, Uint8Array>();
+    const dirs: string[] = [];
+    const fs = {
+      stat: async (path: string) => {
+        if (!files.has(path)) throw new Error(`ENOENT ${path}`);
+        return {};
+      },
+      mkdir: async (path: string) => {
+        dirs.push(path);
+      },
+      readBytes: async (path: string) => {
+        const data = files.get(path);
+        if (data === undefined) throw new Error(`ENOENT ${path}`);
+        return data;
+      },
+      writeBytes: async (path: string, data: Uint8Array) => {
+        files.set(path, data);
+      },
+    } as unknown as IHostFileSystem;
+    return { files, dirs, fs };
+  }
+
+  it('copies only the snapshot files that exist', async () => {
+    const { files, dirs, fs } = memoryFs();
+    files.set('/sessions/sess_test/agents/main/shell-state/shell-state.state', new Uint8Array([1]));
+
+    await seedShellStateFromParent({ ...seedArgs, fs });
+
+    expect(dirs).toEqual(['/sessions/sess_test/agents/agent-0/shell-state']);
+    expect(files.has('/sessions/sess_test/agents/agent-0/shell-state/shell-state.state')).toBe(true);
+    expect(files.has('/sessions/sess_test/agents/agent-0/shell-state/shell-state.vars')).toBe(
+      false,
+    );
+  });
+
+  it('never copies wrappers or commit flags', async () => {
+    const { files, fs } = memoryFs();
+    const parentDir = '/sessions/sess_test/agents/main/shell-state';
+    files.set(`${parentDir}/shell-state.state`, new Uint8Array([1]));
+    files.set(`${parentDir}/wrappers/task-1.sh`, new Uint8Array([2]));
+    files.set(`${parentDir}/task-1.commit-ok`, new Uint8Array([3]));
+
+    await seedShellStateFromParent({ ...seedArgs, fs });
+
+    const childDir = '/sessions/sess_test/agents/agent-0/shell-state';
+    expect([...files.keys()].filter((key) => key.startsWith(childDir))).toEqual([
+      `${childDir}/shell-state.state`,
+    ]);
+  });
+
+  it('is a no-op when the parent has no snapshot files', async () => {
+    const { files, dirs, fs } = memoryFs();
+
+    await seedShellStateFromParent({ ...seedArgs, fs });
+
+    expect(dirs).toEqual([]);
+    expect(files.size).toBe(0);
   });
 });

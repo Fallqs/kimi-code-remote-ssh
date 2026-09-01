@@ -2,7 +2,9 @@ import type { Readable } from 'node:stream';
 
 import type { IHostProcess } from '#/os/interface/hostProcess';
 
-type ProcessHandle = Omit<IHostProcess, '_serviceBrand'>;
+export type ProcessHandle = Omit<IHostProcess, '_serviceBrand'> & {
+  detachToBackground?(): void;
+};
 
 import type {
   AgentTask,
@@ -94,6 +96,11 @@ export class ProcessTask implements AgentTask {
     } finally {
       await this.disposeProcess();
     }
+  }
+
+  onDetach(): void {
+
+    this.proc.detachToBackground?.();
   }
 
   toInfo(base: AgentTaskInfoBase): ProcessTaskInfo {

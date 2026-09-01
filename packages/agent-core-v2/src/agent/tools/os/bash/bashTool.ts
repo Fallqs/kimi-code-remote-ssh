@@ -25,10 +25,14 @@ import { literalRulePattern, matchesGlobRuleSubject } from '#/tool/rule-match';
 import { renderPrompt } from '#/_base/utils/render-prompt';
 import { userCancellationReason } from '#/_base/utils/abort';
 import bashDescriptionTemplate from './bash.md?raw';
-import { ProcessTask } from './process-task';
+import bashStatefulDescriptionTemplate from './bash-stateful.md?raw';
+import { resolveBashConfig } from './configSection';
+import { ProcessTask, type ProcessHandle } from './process-task';
+import { IAgentStatefulShell } from './statefulShell';
 import {
   type BashInput,
   BashInputSchema,
+  type BashRunInput,
   DEFAULT_BACKGROUND_TIMEOUT_S,
   DEFAULT_TIMEOUT_S,
   IBashTool,
@@ -55,15 +59,18 @@ function normalizeTimeoutMs(timeout: number | undefined, isBackground: boolean):
   return Math.min(value, timeoutCapS(isBackground)) * MS_PER_SECOND;
 }
 
-async function disposeProcess(proc: IHostProcess): Promise<void> {
+async function disposeProcess(proc: ProcessHandle): Promise<void> {
   try {
     await proc.dispose();
   } catch {
   }
 }
 
-function renderBashDescription(shellName: string): string {
-  return renderPrompt(bashDescriptionTemplate, { ...SHELL_TIMEOUT_VARS, SHELL_NAME: shellName });
+function renderBashDescription(shellName: string, stateful: boolean): string {
+  return renderPrompt(stateful ? bashStatefulDescriptionTemplate : bashDescriptionTemplate, {
+    ...SHELL_TIMEOUT_VARS,
+    SHELL_NAME: shellName,
+  });
 }
 
 function withoutBackgroundDescription(description: string): string {
@@ -105,7 +112,12 @@ export class BashTool implements IBashTool {
     @IAgentTaskService private readonly tasks: IAgentTaskService,
     @IAgentToolPolicyService private readonly toolPolicy: IAgentToolPolicyService,
     @IConfigService private readonly config: IConfigService,
+    @IAgentStatefulShell private readonly statefulShell: IAgentStatefulShell,
   ) {}
+
+  private bashStatefulEnabled(): boolean {
+    return resolveBashConfig(this.config)?.stateful === true;
+  }
 
   private allowBackground(): boolean {
     return (
@@ -126,7 +138,10 @@ export class BashTool implements IBashTool {
   }
 
   get description(): string {
-    const renderedDescription = renderBashDescription(inspectAgentRuntime(this.runtime).environment.shellName);
+    const renderedDescription = renderBashDescription(
+      inspectAgentRuntime(this.runtime).environment.shellName,
+      this.bashStatefulEnabled(),
+    );
     if (!this.allowBackground()) return withoutBackgroundDescription(renderedDescription);
     if (!this.autoBackgroundOnTimeout()) {
       return withoutAutoBackgroundOnTimeout(renderedDescription);
@@ -134,7 +149,7 @@ export class BashTool implements IBashTool {
     return renderedDescription;
   }
 
-  resolveExecution(args: BashInput): ToolExecution {
+  resolveExecution(args: BashRunInput): ToolExecution {
     const preview = args.command.length > 50 ? `${args.command.slice(0, 50)}…` : args.command;
     return {
       description: args.run_in_background
@@ -173,7 +188,7 @@ export class BashTool implements IBashTool {
   }
 
   private async execution(
-    args: BashInput,
+    args: BashRunInput,
     signal: AbortSignal,
     toolCallId: string,
     onUpdate?: (update: ToolUpdate) => void,
@@ -197,9 +212,17 @@ export class BashTool implements IBashTool {
       : foregroundTimeoutMs;
 
     const builder = new ToolOutputAccumulator();
-    let proc: IHostProcess;
+    const stateful = this.bashStatefulEnabled();
+    if (!stateful) void this.statefulShell.closeShell().catch(() => {});
+    let proc: ProcessHandle;
     try {
-      proc = lease.track(await this.spawn(lease.runtime.process!, env, effectiveCwd, command));
+      proc = stateful
+        ? await this.statefulShell.runTask({
+            command,
+            cwd: args.userInitiated === true && args.cwd === undefined ? undefined : effectiveCwd,
+            background: startsInBackground,
+          })
+        : lease.track(await this.spawn(lease.runtime.process!, env, effectiveCwd, command));
     } catch (error) {
       lease.dispose();
       return {
@@ -315,7 +338,7 @@ export class BashTool implements IBashTool {
 
   private async foregroundCompletionResult(
     taskId: string,
-    proc: IHostProcess,
+    proc: ProcessHandle,
     builder: ToolOutputAccumulator,
     foregroundTimeoutMs: number,
   ): Promise<ExecutableToolResult> {
@@ -376,7 +399,7 @@ export class BashTool implements IBashTool {
 
   private backgroundStartedResult(
     taskId: string,
-    proc: IHostProcess,
+    proc: ProcessHandle,
     description: string,
     labels: { title: string; brief: string },
     builder = new ToolOutputAccumulator(),
@@ -386,7 +409,8 @@ export class BashTool implements IBashTool {
     const detachedByUser = scenario === 'foreground_detached_by_user' ? 'detached_by_user: true\n' : '';
     const metadata =
       `task_id: ${taskId}\n` +
-      `pid: ${String(proc.pid)}\n` +
+
+      `pid: ${proc.pid >= 0 ? String(proc.pid) : 'unknown'}\n` +
       `description: ${description}\n` +
       `status: ${status}\n` +
       detachedByUser +
@@ -453,14 +477,14 @@ function foregroundDescription(args: BashInput): string {
   return `Bash: ${preview}`;
 }
 
-function closeProcessStdin(proc: IHostProcess): void {
+function closeProcessStdin(proc: ProcessHandle): void {
   try {
     proc.stdin.end();
   } catch {
   }
 }
 
-async function killSpawnedProcess(proc: IHostProcess): Promise<void> {
+async function killSpawnedProcess(proc: ProcessHandle): Promise<void> {
   try {
     await proc.kill('SIGTERM');
   } catch {

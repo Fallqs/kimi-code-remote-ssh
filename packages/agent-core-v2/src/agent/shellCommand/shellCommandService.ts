@@ -105,6 +105,8 @@ export class AgentShellCommandService implements IAgentShellCommandService {
       const execution = await bash.resolveExecution({
         command: input.command,
         timeout: SHELL_FOREGROUND_TIMEOUT_S,
+
+        userInitiated: true,
       });
       if (execution.isError === true) {
         const output = typeof execution.output === 'string' ? execution.output : 'Command failed.';

@@ -88,6 +88,15 @@ export * from '#/os/backends/node-local/hostProcessService';
 export * from '#/os/backends/node-local/hostTerminalService';
 export * from '#/agent/tools/os/bash/bash';
 import '#/agent/tools/os/bash/bashTool';
+export * from '#/agent/tools/os/bash/statefulShell';
+import '#/agent/tools/os/bash/statefulShellService';
+import '#/agent/tools/os/bash/configSection';
+export {
+  BASH_SECTION,
+  BashConfigSchema,
+  resolveBashConfig,
+  type BashConfig,
+} from '#/agent/tools/os/bash/configSection';
 export * from '#/agent/tools/os/glob/glob';
 import '#/agent/tools/os/glob/globTool';
 export * from '#/agent/tools/os/grep/grep';
