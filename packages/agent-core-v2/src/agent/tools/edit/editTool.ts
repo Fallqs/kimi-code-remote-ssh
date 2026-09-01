@@ -108,7 +108,11 @@ export class EditTool implements IEditTool {
       return { isError: true, output: result.error };
     }
     const word = result.count === 1 ? 'occurrence' : 'occurrences';
-    return { output: `Replaced ${String(result.count)} ${word} in ${args.path}` };
+    const report =
+      result.normalizations.length > 0
+        ? ` (matched after normalizing: ${result.normalizations.join('; ')})`
+        : '';
+    return { output: `Replaced ${String(result.count)} ${word} in ${args.path}${report}` };
   }
 }
 
