@@ -50,8 +50,12 @@ export class WorkspaceDirsService extends Disposable implements IWorkspaceDirs {
     this.states.contributeState(workspaceDirsEphemeralDirsKey);
     this.projectRoot = workspace.cwd;
     this.configPath = '';
-    this.ready = this.enqueue(() => this.reloadFromDisk());
-    void this.ready.then(() => this.watchLocalToml());
+    if (workspace.remoteCwd === undefined) {
+      this.ready = this.enqueue(() => this.reloadFromDisk());
+      void this.ready.then(() => this.watchLocalToml());
+    } else {
+      this.ready = Promise.resolve();
+    }
   }
 
   private get fileDirs(): readonly string[] {
