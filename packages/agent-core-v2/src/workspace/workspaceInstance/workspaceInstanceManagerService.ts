@@ -237,6 +237,8 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
           this.storage,
           this.log,
           this.hostFs,
+          input.fs,
+          input.runtimeHomeDir,
           this.event,
           this.telemetry,
           this.flags,

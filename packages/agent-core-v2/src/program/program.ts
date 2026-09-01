@@ -167,6 +167,7 @@ export class Program {
       return this.dependencies.createSessionController({
         context: this.context,
         fs: runtime.fs!,
+        runtimeHomeDir: runtime.environment.homeDir,
         workspaceAgentProfiles: generation.agentProfiles,
         extraAgentProfiles: generation.extraAgentProfiles,
         explicitAgentProfiles: generation.explicitAgentProfiles,

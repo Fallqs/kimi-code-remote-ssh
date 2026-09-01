@@ -87,6 +87,7 @@ import { IWorkspaceSkillCatalog } from '#/features/skill/workspace/workspaceSkil
 import { IWorkspaceInstructionsService } from '#/workspace/workspaceInstructions/workspaceInstructions';
 import { IWorkspaceMcpService } from '#/workspace/workspaceMcp/workspaceMcp';
 import { PLUGIN_SKILL_SOURCE_ID } from '#/features/skill/catalog/skillSource';
+import { remoteSessionDir } from '#/workspace/workspaceSsh/remoteSessionDir';
 
 import { agentScopeOf, sessionDirOf, sessionScopeOf } from './internal/addressing';
 import { SessionArchived } from './sessionLifecycleEvents';
@@ -163,6 +164,8 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
     @ILogService private readonly log: ILogService,
     @IHostFileSystem private readonly hostFs: IHostFileSystem,
+    private readonly execFs: IHostFileSystem,
+    private readonly execHomeDir: string,
     @IEventService private readonly event: IEventService,
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IFlagService private readonly flags: IFlagService,
@@ -402,6 +405,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     await this.indexMirror.drain();
     void handle.dispose();
     await drainLogCloses();
+    await this.gcRemoteSessionHome(sessionId);
     this._onDidCloseSession.fire({ sessionId });
     this.telemetry.withContext({ sessionId }).track2('session_ended', { reason: 'exit' });
   }
@@ -424,6 +428,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     await this.indexMirror.drain();
     void handle.dispose();
     await drainLogCloses();
+    await this.gcRemoteSessionHome(sessionId);
     this._onDidArchiveSession.fire({ sessionId });
     this.telemetry.withContext({ sessionId }).track2('session_ended', { reason: 'archive' });
   }
@@ -466,6 +471,17 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     const agentLifecycle = handle.accessor.get(IAgentLifecycleService);
     for (const agent of agentLifecycle.list()) {
       await agentLifecycle.remove(agent);
+    }
+  }
+
+  private async gcRemoteSessionHome(sessionId: string): Promise<void> {
+    if (this.workspaceContext.remoteCwd === undefined) return;
+    try {
+      await this.execFs.remove(remoteSessionDir(this.execHomeDir, sessionId));
+    } catch (error) {
+      this.telemetry.withContext({ sessionId }).track2('session_remote_gc_failed', {
+        reason: isError2(error) ? error.code : error instanceof Error ? error.name : 'unknown',
+      });
     }
   }
 

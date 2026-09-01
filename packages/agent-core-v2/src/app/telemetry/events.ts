@@ -469,6 +469,10 @@ export interface SessionLoadFailedEvent {
   reason: string;
 }
 
+export interface SessionRemoteGcFailedEvent {
+  reason: string;
+}
+
 export interface WireRepairEvent {
   kind: 'corrupted' | 'truncated';
   outcome: 'repaired' | 'failed';
@@ -1114,6 +1118,12 @@ export const telemetryEventDefinitions = {
   session_load_failed: defineTelemetryEvent<SessionLoadFailedEvent>({
     owner: 'kimi-code',
     comment: 'A session resume fails.',
+    properties: { reason: 'Error code, error name, or unknown' },
+  }),
+  session_remote_gc_failed: defineTelemetryEvent<SessionRemoteGcFailedEvent>({
+    owner: 'kimi-code',
+    comment:
+      "The best-effort removal of a remote session's exec-side home fails; the close/archive still completes.",
     properties: { reason: 'Error code, error name, or unknown' },
   }),
   wire_repair: defineTelemetryEvent<WireRepairEvent>({
