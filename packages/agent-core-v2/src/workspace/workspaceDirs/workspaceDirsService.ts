@@ -48,14 +48,10 @@ export class WorkspaceDirsService extends Disposable implements IWorkspaceDirs {
     super();
     this.states.contributeState(workspaceDirsFileDirsKey);
     this.states.contributeState(workspaceDirsEphemeralDirsKey);
-    this.projectRoot = workspace.cwd;
+    this.projectRoot = workspace.remoteCwd ?? workspace.cwd;
     this.configPath = '';
-    if (workspace.remoteCwd === undefined) {
-      this.ready = this.enqueue(() => this.reloadFromDisk());
-      void this.ready.then(() => this.watchLocalToml());
-    } else {
-      this.ready = Promise.resolve();
-    }
+    this.ready = this.enqueue(() => this.reloadFromDisk());
+    void this.ready.then(() => this.watchLocalToml());
   }
 
   private get fileDirs(): readonly string[] {
@@ -104,12 +100,16 @@ export class WorkspaceDirsService extends Disposable implements IWorkspaceDirs {
     };
   }
 
+  private get baseDir(): string {
+    return this.workspace.remoteCwd ?? this.workspace.cwd;
+  }
+
   private async applyAddDir(input: WorkspaceAddDirInput): Promise<WorkspaceAdditionalDirsResult> {
     const persist = input.persist ?? true;
 
     if (persist) {
       const persisted = await this.localConfig.appendAdditionalDir(
-        this.workspace.cwd,
+        this.baseDir,
         input.path,
       );
       this.projectRoot = persisted.projectRoot;
@@ -126,10 +126,10 @@ export class WorkspaceDirsService extends Disposable implements IWorkspaceDirs {
       };
     }
 
-    const onDisk = await this.localConfig.readAdditionalDirs(this.workspace.cwd);
+    const onDisk = await this.localConfig.readAdditionalDirs(this.baseDir);
     this.projectRoot = onDisk.projectRoot;
     this.configPath = onDisk.configPath;
-    const resolved = await this.localConfig.resolveAdditionalDirs(this.workspace.cwd, [
+    const resolved = await this.localConfig.resolveAdditionalDirs(this.baseDir, [
       input.path,
     ]);
     const changed = this.unionEphemeral(resolved);
@@ -145,7 +145,7 @@ export class WorkspaceDirsService extends Disposable implements IWorkspaceDirs {
   }
 
   private async reloadFromDisk(): Promise<void> {
-    const onDisk = await this.localConfig.readAdditionalDirs(this.workspace.cwd);
+    const onDisk = await this.localConfig.readAdditionalDirs(this.baseDir);
     this.projectRoot = onDisk.projectRoot;
     this.configPath = onDisk.configPath;
     if (this.setFileDirs(onDisk.additionalDirs)) {

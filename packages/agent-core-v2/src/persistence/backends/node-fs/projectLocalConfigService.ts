@@ -33,6 +33,7 @@ export class FileProjectLocalConfigService implements IProjectLocalConfigService
   constructor(
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IHostFileSystem private readonly fs: IHostFileSystem,
+    private readonly homeDir?: string,
   ) {}
 
   async readAdditionalDirs(workDir: string): Promise<ProjectAdditionalDirsLoadResult> {
@@ -184,8 +185,9 @@ export class FileProjectLocalConfigService implements IProjectLocalConfigService
   }
 
   private expandHome(value: string): string {
-    if (value === '~') return this.bootstrap.osHomeDir;
-    if (value.startsWith('~/')) return join(this.bootstrap.osHomeDir, value.slice(2));
+    const home = this.homeDir ?? this.bootstrap.osHomeDir;
+    if (value === '~') return home;
+    if (value.startsWith('~/')) return join(home, value.slice(2));
     return value;
   }
 
