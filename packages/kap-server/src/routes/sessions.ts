@@ -63,7 +63,6 @@ import { errEnvelope, okEnvelope } from '../envelope';
 import { requestLog } from '../lib/requestLog';
 import {
   getLiveSessionForClient,
-  isClientVisibleSessionId,
   resumeSessionForClient,
   tryShadowAlias,
 } from '../shadowAlias';

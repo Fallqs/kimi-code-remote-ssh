@@ -93,7 +93,7 @@ function shellQuote(s: string): string {
 }
 
 async function runBashScript(shellPath: string, script: string): Promise<string> {
-  return await new Promise<string>((resolve, reject) => {
+  return new Promise<string>((resolve, reject) => {
     const proc = spawn(shellPath, ['--noprofile', '--norc'], {
       env: sanitizedEnv(),
       stdio: ['pipe', 'pipe', 'pipe'],

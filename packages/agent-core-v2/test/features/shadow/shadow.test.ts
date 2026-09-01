@@ -245,7 +245,7 @@ describe('ShadowSessionCoordinatorService', () => {
   let disposables: DisposableStore;
   let ix: TestInstantiationService;
   let publish: ReturnType<typeof vi.fn>;
-  let forkFrom: ReturnType<typeof vi.fn>;
+  let forkFrom: ReturnType<typeof vi.fn<(root: string, src: unknown, opts: unknown) => Promise<unknown>>>;
   let deleteSession: ReturnType<typeof vi.fn>;
   let catalogDelete: ReturnType<typeof vi.fn>;
   const live = new Map<string, ReturnType<typeof fakeSessionHandle>>();
@@ -254,7 +254,7 @@ describe('ShadowSessionCoordinatorService', () => {
     disposables = new DisposableStore();
     ix = disposables.add(new TestInstantiationService());
     publish = vi.fn();
-    forkFrom = vi.fn();
+    forkFrom = vi.fn<(root: string, src: unknown, opts: unknown) => Promise<unknown>>();
     deleteSession = vi.fn(async () => {});
     catalogDelete = vi.fn(async () => {});
     live.clear();
@@ -311,7 +311,7 @@ describe('ShadowSessionCoordinatorService', () => {
       append: vi.fn(),
     });
     live.set('s1', source);
-    forkFrom.mockImplementation(async (root: string, src: unknown, opts: unknown) => {
+    forkFrom.mockImplementation((root: string, src: unknown, opts: unknown) => {
       const target = fakeSessionHandle({
         sessionId: 'shadow-1',
         custom: (opts as { metadata?: Record<string, unknown> }).metadata,
@@ -320,7 +320,7 @@ describe('ShadowSessionCoordinatorService', () => {
         append: vi.fn(),
       });
       live.set('shadow-1', target);
-      return target;
+      return Promise.resolve(target);
     });
 
     const info = await coordinator().enterShadow('s1');

@@ -180,7 +180,7 @@ class SshHostFileSystem implements IHostFileSystem {
     }
     const exitCode = await proc.wait();
     try {
-      proc.dispose();
+      void proc.dispose();
     } catch {
     }
     if (exitCode !== 0) {
@@ -216,7 +216,7 @@ class SshHostFileSystem implements IHostFileSystem {
     proc.stderr.resume();
     const exitCode = await proc.wait();
     try {
-      proc.dispose();
+      void proc.dispose();
     } catch {
     }
     if (exitCode === 0) return true;
