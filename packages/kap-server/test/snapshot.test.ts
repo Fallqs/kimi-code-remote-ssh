@@ -31,6 +31,7 @@ import { emptySessionUsage } from '../src/protocol/session';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { registerSnapshotRoutes } from '../src/routes/snapshot';
+import { IShadowAliasService } from '../src/shadowAlias';
 import { type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';
@@ -139,6 +140,16 @@ describe('server-v2 snapshot route enrichment', () => {
         ],
         [IWorkspaceService, { get: async () => ({ root: '/workspace' }) }],
         [ITelemetryService, { withContext: () => ({ track2: () => {} }) }],
+        [
+          IShadowAliasService,
+          {
+            effectiveId: (id: string) => id,
+            presentedId: (id: string) => id,
+            isShadowId: () => false,
+            isShadowed: () => false,
+            noteSwitch: () => {},
+          },
+        ],
         [
           IAppendLogStore,
           {
@@ -304,6 +315,16 @@ describe('server-v2 snapshot route enrichment', () => {
         ],
         [IWorkspaceService, { get: async () => ({ root: '/workspace' }) }],
         [ITelemetryService, { withContext: () => ({ track2: () => {} }) }],
+        [
+          IShadowAliasService,
+          {
+            effectiveId: (id: string) => id,
+            presentedId: (id: string) => id,
+            isShadowId: () => false,
+            isShadowed: () => false,
+            noteSwitch: () => {},
+          },
+        ],
         [
           IAppendLogStore,
           {
