@@ -514,7 +514,9 @@ describe('server-v2 /api/v1 plugins', () => {
     expect(cu?.tier).toBe('official');
     expect(cu?.capabilityId).toBe('kimi-cu');
     expect(cu?.source).toBe('capability:kimi-cu');
-    expect(cu?.displayName).toBe('Kimi Computer Use');
+    expect(cu?.displayName).toBe(
+      process.platform === 'win32' ? 'Kimi Computer Use for Windows' : 'Kimi Computer Use',
+    );
 
     const cuSource = await makePluginDir('kimi-cu', '0.5.8');
     await call('POST', '/api/v1/plugins', { source: cuSource });
