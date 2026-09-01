@@ -1,10 +1,11 @@
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { log, type GoalSnapshot } from '@moonshot-ai/kimi-code-sdk';
 import type { MigrationPlan } from '@moonshot-ai/migration-legacy';
-import { describe, expect, it, vi } from 'vitest';
+import { resolve } from 'pathe';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { BannerProvider } from '#/tui/banner/banner-provider';
 import { readBannerDisplayState } from '#/tui/banner/state';
@@ -44,6 +45,13 @@ interface StartupDriver {
 
 interface RuntimeStateDriver extends StartupDriver {
   closeSession(reason: string): Promise<void>;
+}
+
+interface NewSessionDriver extends StartupDriver {
+  handleUserInput(text: string): void;
+  createNewSession(spec?: string): Promise<void>;
+  showError(message: string): void;
+  persistInputHistory(text: string): Promise<void>;
 }
 
 interface ThemeTrackingDriver extends StartupDriver {
@@ -107,6 +115,7 @@ function makeSession(overrides: Record<string, unknown> = {}) {
   return {
     id: 'ses-1',
     model: 'k2',
+    workDir: '/tmp/proj-a',
     summary: { title: 'Session title' },
     getStatus: vi.fn(async () => ({
       model: 'k2',
@@ -258,6 +267,20 @@ function captureInputListeners(driver: StartupDriver) {
 
   return { listeners, removeInputListener, write, addInputListener };
 }
+
+// Session create/resume in this file records into the MRU workdir store —
+// point KIMI_CODE_HOME at a temp dir so tests never touch the developer's
+// real ~/.kimi-code/recent-workdirs.json. Re-set before each test because
+// individual tests snapshot/restore process.env around themselves.
+const startupTestHome = mkdtempSync(join(tmpdir(), 'kimi-startup-test-home-'));
+
+beforeEach(() => {
+  process.env['KIMI_CODE_HOME'] = startupTestHome;
+});
+
+afterAll(() => {
+  rmSync(startupTestHome, { recursive: true, force: true });
+});
 
 describe('KimiTUI startup', () => {
   it('creates a fresh session from startup flags and syncs runtime state', async () => {
@@ -2443,6 +2466,168 @@ describe('KimiTUI startup', () => {
       replayTurnLimit: REPLAY_FETCH_TURN_LIMIT,
     });
     expect(driver.state.appState.sessionId).toBe('ses-target');
+  });
+});
+
+describe('KimiTUI createNewSession with a workdir spec', () => {
+  it('passes /new arguments through dispatch to createNewSession', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'kimi-new-session-'));
+    try {
+      const harness = makeHarness(makeSession());
+      const driver = makeDriver(harness, {
+        ...makeStartupInput(),
+        workDir: root,
+      }) as unknown as NewSessionDriver;
+      driver.persistInputHistory = vi.fn(async () => {});
+      await expect(driver.init()).resolves.toBe(false);
+      const createNewSession = vi.spyOn(driver, 'createNewSession').mockResolvedValue(undefined);
+
+      driver.handleUserInput('/new ../sibling');
+
+      await vi.waitFor(() => {
+        expect(createNewSession).toHaveBeenCalledWith('../sibling');
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('creates the session in a resolved relative directory and switches the TUI workdir', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'kimi-new-session-'));
+    mkdirSync(join(root, 'sub'));
+    try {
+      const harness = makeHarness(makeSession());
+      const driver = makeDriver(harness, {
+        ...makeStartupInput(),
+        workDir: root,
+      }) as unknown as NewSessionDriver;
+
+      await expect(driver.init()).resolves.toBe(false);
+      await driver.createNewSession('sub');
+
+      const resolved = resolve(root, 'sub');
+      expect(harness.createSession).toHaveBeenLastCalledWith(
+        expect.objectContaining({ workDir: resolved }),
+      );
+      expect(driver.state.appState.workDir).toBe(resolved);
+      expect(driver.state.appState.sessionId).toBe('ses-1');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('expands a ~ spec to the home directory', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'kimi-new-session-'));
+    try {
+      const harness = makeHarness(makeSession());
+      const driver = makeDriver(harness, {
+        ...makeStartupInput(),
+        workDir: root,
+      }) as unknown as NewSessionDriver;
+
+      await expect(driver.init()).resolves.toBe(false);
+      await driver.createNewSession('~');
+
+      expect(harness.createSession).toHaveBeenLastCalledWith(
+        expect.objectContaining({ workDir: resolve(homedir()) }),
+      );
+      expect(driver.state.appState.workDir).toBe(resolve(homedir()));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the current workdir when the spec is blank', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'kimi-new-session-'));
+    try {
+      const harness = makeHarness(makeSession());
+      const driver = makeDriver(harness, {
+        ...makeStartupInput(),
+        workDir: root,
+      }) as unknown as NewSessionDriver;
+
+      await expect(driver.init()).resolves.toBe(false);
+      await driver.createNewSession('   ');
+
+      expect(harness.createSession).toHaveBeenLastCalledWith(
+        expect.objectContaining({ workDir: root }),
+      );
+      expect(driver.state.appState.workDir).toBe(root);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('creates an ssh session from the raw spec and switches to the canonical workdir', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'kimi-new-session-'));
+    try {
+      const session = makeSession({ id: 'ses-ssh', workDir: 'ssh://gpucluster/home/user' });
+      const harness = makeHarness(session);
+      const driver = makeDriver(harness, {
+        ...makeStartupInput(),
+        workDir: root,
+      }) as unknown as NewSessionDriver;
+
+      await expect(driver.init()).resolves.toBe(false);
+      await driver.createNewSession('  ssh://GpuCluster:22/home/user/  ');
+
+      // The raw spec goes to the SDK — canonicalization and the ssh
+      // connection are the SDK's job.
+      expect(harness.createSession).toHaveBeenLastCalledWith(
+        expect.objectContaining({ workDir: 'ssh://GpuCluster:22/home/user/' }),
+      );
+      expect(driver.state.appState.sessionId).toBe('ses-ssh');
+      // The TUI follows the SDK-canonicalized workdir from the session summary.
+      expect(driver.state.appState.workDir).toBe('ssh://gpucluster/home/user');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('shows an error and keeps the current session when the ssh session fails to connect', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'kimi-new-session-'));
+    try {
+      const harness = makeHarness(makeSession({ id: 'ses-current' }));
+      const driver = makeDriver(harness, {
+        ...makeStartupInput(),
+        workDir: root,
+      }) as unknown as NewSessionDriver;
+      await expect(driver.init()).resolves.toBe(false);
+      harness.createSession.mockRejectedValueOnce(new Error('Connection refused'));
+      const showError = vi.spyOn(driver, 'showError').mockImplementation(() => {});
+
+      await driver.createNewSession('ssh://gpucluster/home/user');
+
+      expect(showError).toHaveBeenCalledWith('Failed to start a new session: Connection refused');
+      expect(driver.state.appState.sessionId).toBe('ses-current');
+      expect(driver.state.appState.workDir).toBe(root);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('shows an error for a nonexistent directory and keeps the current session', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'kimi-new-session-'));
+    try {
+      const harness = makeHarness(makeSession());
+      const driver = makeDriver(harness, {
+        ...makeStartupInput(),
+        workDir: root,
+      }) as unknown as NewSessionDriver;
+      await expect(driver.init()).resolves.toBe(false);
+      const showError = vi.spyOn(driver, 'showError').mockImplementation(() => {});
+      const callsBefore = harness.createSession.mock.calls.length;
+
+      await driver.createNewSession('missing-dir');
+
+      expect(showError).toHaveBeenCalledWith(
+        `Directory not found: ${resolve(root, 'missing-dir')}`,
+      );
+      expect(harness.createSession.mock.calls.length).toBe(callsBefore);
+      expect(driver.state.appState.workDir).toBe(root);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

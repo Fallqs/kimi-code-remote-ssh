@@ -5,7 +5,12 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { FileMentionProvider } from '#/tui/components/editor/file-mention-provider';
+import {
+  FileMentionProvider,
+  type RemoteFileSystem,
+  type RemoteFsEntry,
+  type SlashAutocompleteCommand,
+} from '#/tui/components/editor/file-mention-provider';
 
 function ctrl(): AbortSignal {
   return new AbortController().signal;
@@ -479,7 +484,9 @@ describe('FileMentionProvider', () => {
   });
 
   describe('bash-mode path completion dotfile filtering', () => {
-    it('hides dot-prefixed entries (matching /add-dir) in bash mode', async () => {
+    // pi-tui's local path completer keys absolute paths off a leading `/`, so
+    // `cd C:\…\` never reaches the listing branch on Windows — POSIX-only.
+    it.skipIf(process.platform === 'win32')('hides dot-prefixed entries (matching /add-dir) in bash mode', async () => {
       mkdirSync(join(workDir, '.hidden'));
       mkdirSync(join(workDir, 'visible'));
       writeFileSync(join(workDir, '.dotfile'), '');
@@ -500,7 +507,7 @@ describe('FileMentionProvider', () => {
       expect(labels).not.toContain('.dotfile');
     });
 
-    it('keeps dot-prefixed entries in prompt mode', async () => {
+    it.skipIf(process.platform === 'win32')('keeps dot-prefixed entries in prompt mode', async () => {
       mkdirSync(join(workDir, '.hidden'));
       writeFileSync(join(workDir, '.dotfile'), '');
 
@@ -641,6 +648,251 @@ describe('FileMentionProvider', () => {
     });
   });
 
+  describe('remote filesystem (ssh workdirs)', () => {
+    const SSH_WORK_DIR = 'ssh://example.test/work';
+
+    function remoteProvider(
+      remoteFs: RemoteFileSystem,
+      inputMode: 'prompt' | 'bash' = 'prompt',
+      slashCommands: SlashAutocompleteCommand[] = [],
+    ): FileMentionProvider {
+      // The provider must never touch the local filesystem for a remote
+      // workdir: it gets the ssh spec as workDir, so every suggestion has to
+      // come from the fake remote fs.
+      return new FileMentionProvider(
+        slashCommands,
+        SSH_WORK_DIR,
+        NO_FD,
+        [],
+        () => inputMode,
+        remoteFs,
+      );
+    }
+
+    function fakeRemoteFs(overrides: Partial<RemoteFileSystem> = {}) {
+      return {
+        readdir: vi.fn(async (_dir: string): Promise<readonly RemoteFsEntry[]> => []),
+        searchFiles: vi.fn(
+          async (_query?: string): Promise<readonly { path: string; isDirectory: boolean }[]> => [],
+        ),
+        ...overrides,
+      };
+    }
+
+    it('lists remote @ mention candidates through the remote fs, ranked server-side', async () => {
+      const remoteFs = fakeRemoteFs({
+        searchFiles: vi.fn(async () => [
+          { path: 'src', isDirectory: true },
+          { path: 'src/index.ts', isDirectory: false },
+        ]),
+      });
+      const provider = remoteProvider(remoteFs);
+
+      const result = await provider.getSuggestions(['@s'], 0, 2, { signal: ctrl() });
+
+      expect(remoteFs.searchFiles).toHaveBeenCalledWith('s');
+      expect(remoteFs.readdir).not.toHaveBeenCalled();
+      expect(result).not.toBeNull();
+      // The server ranking is kept verbatim.
+      expect(result!.items.map((item) => item.value)).toEqual(['@src/', '@src/index.ts']);
+      expect(result!.items.map((item) => item.label)).toEqual(['src/', 'index.ts']);
+      expect(result!.items[1]!.description).toBe('ssh://example.test/work/src/index.ts');
+      expect(result!.prefix).toBe('@s');
+    });
+
+    it('queries the remote fs with an empty query for a bare @', async () => {
+      const remoteFs = fakeRemoteFs({
+        searchFiles: vi.fn(async () => [{ path: 'README.md', isDirectory: false }]),
+      });
+      const provider = remoteProvider(remoteFs);
+
+      const result = await provider.getSuggestions(['hey @'], 0, 5, { signal: ctrl() });
+
+      expect(remoteFs.searchFiles).toHaveBeenCalledWith('');
+      expect(result!.items.map((item) => item.value)).toEqual(['@README.md']);
+    });
+
+    it('narrows path-ish @ queries by listing the remote directory', async () => {
+      const remoteFs = fakeRemoteFs({
+        readdir: vi.fn(async (dir: string) => {
+          expect(dir).toBe('src');
+          return [
+            { name: 'components', path: 'src/components', isDirectory: true },
+            { name: 'utils.ts', path: 'src/utils.ts', isDirectory: false },
+          ];
+        }),
+      });
+      const provider = remoteProvider(remoteFs);
+
+      const result = await provider.getSuggestions(['@src/com'], 0, 8, { signal: ctrl() });
+
+      // The name-fuzzy remote search cannot serve path-ish queries.
+      expect(remoteFs.searchFiles).not.toHaveBeenCalled();
+      expect(result!.items.map((item) => item.value)).toEqual(['@src/components/']);
+      expect(result!.prefix).toBe('@src/com');
+    });
+
+    it('caps remote @ mention suggestions', async () => {
+      const files = Array.from({ length: 60 }, (_, i) => ({
+        path: `file-${String(i).padStart(2, '0')}.txt`,
+        isDirectory: false,
+      }));
+      const remoteFs = fakeRemoteFs({ searchFiles: vi.fn(async () => files) });
+      const provider = remoteProvider(remoteFs);
+
+      const result = await provider.getSuggestions(['@file'], 0, 5, { signal: ctrl() });
+
+      expect(result!.items).toHaveLength(50);
+    });
+
+    it('closes the @ mention list when the remote search fails', async () => {
+      const remoteFs = fakeRemoteFs({
+        searchFiles: vi.fn(async () => {
+          throw new Error('sftp down');
+        }),
+      });
+      const provider = remoteProvider(remoteFs);
+
+      const result = await provider.getSuggestions(['@s'], 0, 2, { signal: ctrl() });
+
+      expect(result).toBeNull();
+    });
+
+    it('drops remote @ mention results that resolve after the request went stale', async () => {
+      const controller = new AbortController();
+      const remoteFs = fakeRemoteFs({
+        searchFiles: vi.fn(async () => {
+          controller.abort();
+          return [{ path: 'src/index.ts', isDirectory: false }];
+        }),
+      });
+      const provider = remoteProvider(remoteFs);
+
+      const result = await provider.getSuggestions(['@s'], 0, 2, { signal: controller.signal });
+
+      expect(result).toBeNull();
+    });
+
+    it('completes remote paths through the remote fs', async () => {
+      const remoteFs = fakeRemoteFs({
+        readdir: vi.fn(async (dir: string) => {
+          expect(dir).toBe('src');
+          return [
+            { name: 'components', path: 'src/components', isDirectory: true },
+            { name: 'utils.ts', path: 'src/utils.ts', isDirectory: false },
+          ];
+        }),
+      });
+      const provider = remoteProvider(remoteFs);
+
+      const result = await provider.getSuggestions(['cat src/ut'], 0, 10, {
+        signal: ctrl(),
+        force: true,
+      });
+
+      expect(result).not.toBeNull();
+      expect(result!.items.map((item) => item.value)).toEqual(['src/utils.ts']);
+      expect(result!.prefix).toBe('src/ut');
+    });
+
+    it('lists the remote root for an empty forced path', async () => {
+      const remoteFs = fakeRemoteFs({
+        readdir: vi.fn(async (dir: string) => {
+          expect(dir).toBe('.');
+          return [
+            { name: 'src', path: 'src', isDirectory: true },
+            { name: 'README.md', path: 'README.md', isDirectory: false },
+          ];
+        }),
+      });
+      const provider = remoteProvider(remoteFs);
+
+      const result = await provider.getSuggestions([''], 0, 0, { signal: ctrl(), force: true });
+
+      // Directories first, then alphabetically (pi-tui's ordering).
+      expect(result!.items.map((item) => item.value)).toEqual(['src/', 'README.md']);
+    });
+
+    it('quotes remote paths containing spaces', async () => {
+      const remoteFs = fakeRemoteFs({
+        readdir: vi.fn(async () => [
+          { name: 'my file.txt', path: 'my file.txt', isDirectory: false },
+        ]),
+      });
+      const provider = remoteProvider(remoteFs);
+
+      const result = await provider.getSuggestions([''], 0, 0, { signal: ctrl(), force: true });
+
+      expect(result!.items.map((item) => item.value)).toEqual(['"my file.txt"']);
+    });
+
+    it('closes the path list when the remote readdir fails', async () => {
+      const remoteFs = fakeRemoteFs({
+        readdir: vi.fn(async () => {
+          throw new Error('sftp down');
+        }),
+      });
+      const provider = remoteProvider(remoteFs);
+
+      const result = await provider.getSuggestions(['cat src/'], 0, 8, {
+        signal: ctrl(),
+        force: true,
+      });
+
+      expect(result).toBeNull();
+    });
+
+    it('caches remote directory listings across keystrokes', async () => {
+      const remoteFs = fakeRemoteFs({
+        readdir: vi.fn(async () => [
+          { name: 'alpha.ts', path: 'src/alpha.ts', isDirectory: false },
+        ]),
+      });
+      const provider = remoteProvider(remoteFs);
+
+      await provider.getSuggestions(['cat src/a'], 0, 9, { signal: ctrl(), force: true });
+      const second = await provider.getSuggestions(['cat src/al'], 0, 10, {
+        signal: ctrl(),
+        force: true,
+      });
+
+      expect(remoteFs.readdir).toHaveBeenCalledTimes(1);
+      expect(second!.items.map((item) => item.value)).toEqual(['src/alpha.ts']);
+    });
+
+    it('hides dot-prefixed remote entries in bash mode only', async () => {
+      const entries = [
+        { name: '.hidden', path: 'src/.hidden', isDirectory: false },
+        { name: 'visible.ts', path: 'src/visible.ts', isDirectory: false },
+      ];
+      const bashProvider = remoteProvider(fakeRemoteFs({ readdir: vi.fn(async () => entries) }), 'bash');
+      const promptProvider = remoteProvider(fakeRemoteFs({ readdir: vi.fn(async () => entries) }));
+
+      const bashResult = await bashProvider.getSuggestions(['cat src/'], 0, 8, {
+        signal: ctrl(),
+        force: true,
+      });
+      const promptResult = await promptProvider.getSuggestions(['cat src/'], 0, 8, {
+        signal: ctrl(),
+        force: true,
+      });
+
+      expect(bashResult!.items.map((item) => item.label)).toEqual(['visible.ts']);
+      expect(promptResult!.items.map((item) => item.label)).toEqual(['.hidden', 'visible.ts']);
+    });
+
+    it('keeps slash command completion local when a remote fs is attached', async () => {
+      const remoteFs = fakeRemoteFs();
+      const provider = remoteProvider(remoteFs, 'prompt', [HELP_COMMAND]);
+
+      const result = await provider.getSuggestions(['/he'], 0, 3, { signal: ctrl() });
+
+      expect(remoteFs.readdir).not.toHaveBeenCalled();
+      expect(remoteFs.searchFiles).not.toHaveBeenCalled();
+      expect(result!.items.map((item) => item.value)).toEqual(['help']);
+    });
+  });
+
   describe('inline skill completion', () => {
     const REVIEW_COMMAND = {
       name: 'skill:review',
@@ -667,6 +919,7 @@ describe('FileMentionProvider', () => {
         NO_FD,
         [],
         () => 'prompt',
+        undefined,
         SKILL_NAMES,
       );
     }

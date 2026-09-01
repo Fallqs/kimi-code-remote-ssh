@@ -21,6 +21,7 @@ import {
   KIMI_CODE_NATIVE_STAGED_STATE_FILE_NAME,
   KIMI_CODE_NATIVE_STAGING_DIR_NAME,
   KIMI_CODE_PLUGIN_UPDATE_NOTICE_STATE_FILE_NAME,
+  KIMI_CODE_RECENT_WORKDIRS_FILE_NAME,
   KIMI_CODE_UPDATE_INSTALL_LOCK_FILE_NAME,
   KIMI_CODE_UPDATE_INSTALL_STATE_FILE_NAME,
   KIMI_CODE_UPDATE_DIR_NAME,
@@ -133,4 +134,11 @@ export function getBannerStateFile(): string {
 export function getInputHistoryFile(workDir: string): string {
   const hash = createHash('md5').update(workDir, 'utf-8').digest('hex');
   return join(getDataDir(), KIMI_CODE_INPUT_HISTORY_DIR_NAME, `${hash}.jsonl`);
+}
+
+/**
+ * Return the MRU workdirs file: `<dataDir>/recent-workdirs.json`.
+ */
+export function getRecentWorkdirsFile(): string {
+  return join(getDataDir(), KIMI_CODE_RECENT_WORKDIRS_FILE_NAME);
 }

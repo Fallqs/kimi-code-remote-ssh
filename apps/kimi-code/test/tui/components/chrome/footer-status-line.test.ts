@@ -133,6 +133,26 @@ describe('FooterComponent status_line items', () => {
 
     expect(plain(footer.render(120)[0]!).trim()).toBe('');
   });
+
+  it('renders a short ssh workdir as user@host/path without truncation', () => {
+    const footer = new FooterComponent({
+      ...baseState,
+      workDir: 'ssh://user@gpucluster:22/home/user',
+      statusLine: { items: ['cwd'], command: null },
+    });
+
+    expect(plain(footer.render(120)[0]!)).toContain('user@gpucluster:22/home/user');
+  });
+
+  it('keeps the remote host when truncating a deep ssh workdir', () => {
+    const footer = new FooterComponent({
+      ...baseState,
+      workDir: 'ssh://gpu76/mnt/sdb1/fallqs/proj/indexers',
+      statusLine: { items: ['cwd'], command: null },
+    });
+
+    expect(plain(footer.render(120)[0]!)).toContain('gpu76/…/proj/indexers');
+  });
 });
 
 describe('runStatusLineCommand', () => {

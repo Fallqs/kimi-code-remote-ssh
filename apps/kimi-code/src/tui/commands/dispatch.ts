@@ -54,6 +54,7 @@ import {
   type BuiltinSlashCommandName,
 } from './registry';
 import { handleReloadCommand, handleReloadTuiCommand } from './reload';
+import { handleResumeRemoteCommand } from './resume-remote';
 import type { SkillListSession } from './skills';
 import {
   canRestoreSubmittedInput,
@@ -101,6 +102,7 @@ export { handleTowerCommand } from './tower';
 export { handleFeedbackCommand, showMcpServers, showStatusReport, showUsage } from './info';
 export { handlePluginsCommand } from './plugins';
 export { handleReloadCommand, handleReloadTuiCommand } from './reload';
+export { handleResumeRemoteCommand } from './resume-remote';
 export { handleGoalCommand } from './goal';
 export {
   handleExportDebugZipCommand,
@@ -195,7 +197,7 @@ export interface SlashCommandHost {
    */
   setExitForegroundTask(task: (exitCode: number) => Promise<void>): void;
   showHelpPanel(): void;
-  createNewSession(): Promise<void>;
+  createNewSession(spec?: string): Promise<void>;
   showSessionPicker(): Promise<void>;
   sendNormalUserInput(text: string): void;
   /**
@@ -491,7 +493,7 @@ async function handleBuiltInSlashCommand(
         host.showError(slashBusyMessage(name, busyReason));
         return;
       }
-      await host.createNewSession();
+      await host.createNewSession(args);
       host.state.ui.requestRender();
       return;
     }
@@ -516,6 +518,9 @@ async function handleBuiltInSlashCommand(
       return;
     case 'add-dir':
       await handleAddDirCommand(host, args);
+      return;
+    case 'resume-remote':
+      await handleResumeRemoteCommand(host);
       return;
     case 'experiments':
       await showExperimentsPanel(host);

@@ -16,6 +16,7 @@ import { isRainbowDancing, renderDanceFooterModel } from '#/tui/easter-eggs/danc
 import { currentTheme } from '#/tui/theme';
 import type { ColorPalette } from '#/tui/theme/colors';
 import type { AppState } from '#/tui/types';
+import { isSshWorkDirSpec } from '#/tui/utils/workdir-spec';
 import { PERMISSION_MODE_DISPLAY_NAMES } from '#/tui/utils/permission-mode';
 import {
   StatusLineCommandRunner,
@@ -150,6 +151,15 @@ function modelDisplayName(state: AppState): string {
 
 function shortenCwd(path: string): string {
   if (!path) return path;
+  // ssh workdirs render as a compact user@host/path form — the remote host is
+  // the identity that matters, so it always survives truncation.
+  if (isSshWorkDirSpec(path)) {
+    const remote = path.replace(/^ssh:\/\//i, '');
+    const segments = remote.split('/').filter((s) => s.length > 0);
+    if (segments.length <= MAX_CWD_SEGMENTS) return segments.join('/');
+    const [host, ...tail] = segments;
+    return `${host}/…/${tail.slice(-(MAX_CWD_SEGMENTS - 1)).join('/')}`;
+  }
   const home = process.env['HOME'] ?? '';
   let work = path;
   if (home && path === home) {

@@ -1,15 +1,35 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'pathe';
+
 import {
   BUILTIN_SLASH_COMMANDS,
   findBuiltInSlashCommand,
   parseSlashInput,
   resolveSlashCommandAvailability,
   addDirArgumentCompletions,
+  newSessionArgumentCompletions,
   sortSlashCommands,
   swarmArgumentCompletions,
   towerArgumentCompletions,
   type KimiSlashCommand,
 } from '#/tui/commands/index';
-import { describe, expect, it } from 'vitest';
+import { recordRecentWorkdir } from '#/tui/utils/recent-workdirs';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+const originalEnv = { ...process.env };
+
+let recentWorkdirsHome: string;
+
+beforeEach(async () => {
+  recentWorkdirsHome = await mkdtemp(join(tmpdir(), 'kimi-registry-test-'));
+  process.env['KIMI_CODE_HOME'] = recentWorkdirsHome;
+});
+
+afterEach(async () => {
+  process.env = { ...originalEnv };
+  await rm(recentWorkdirsHome, { recursive: true, force: true });
+});
 
 describe('parseSlashInput', () => {
   it('parses command names and trimmed args', () => {
@@ -113,6 +133,76 @@ describe('built-in slash command registry', () => {
     expect(homeCompletions.some((value) => value.startsWith('~/sers/'))).toBe(false);
   });
 
+  it('registers /new with a path argument and directory completions', () => {
+    const newCommand = findBuiltInSlashCommand('new') as KimiSlashCommand;
+    expect(newCommand).toBeDefined();
+    expect(newCommand.argumentHint).toBe('[path]');
+    expect(newCommand.completeArgs).toBe(newSessionArgumentCompletions);
+    expect(resolveSlashCommandAvailability(newCommand, '')).toBe('idle-only');
+    expect(resolveSlashCommandAvailability(newCommand, '../other')).toBe('idle-only');
+
+    const values = (prefix: string): string[] | null => {
+      const items = newSessionArgumentCompletions(prefix);
+      return items === null ? null : items.map((item) => item.value);
+    };
+
+    // Only path-like prefixes complete; ssh:// specs get no local completion.
+    expect(values('')).toBeNull();
+    expect(values('src')).toBeNull();
+    expect(values('ssh://host/path')).toBeNull();
+    expect(values('SSH://host')).toBeNull();
+    const directoryCompletions = values('/') ?? [];
+    expect(directoryCompletions.length).toBeGreaterThan(0);
+    expect(directoryCompletions.every((value) => value.startsWith('/') && value.endsWith('/'))).toBe(true);
+    const homeCompletions = values('~/') ?? [];
+    expect(homeCompletions.length).toBeGreaterThan(0);
+    expect(homeCompletions.every((value) => value.startsWith('~/') && value.endsWith('/'))).toBe(true);
+  });
+
+  it('offers matching recent workdirs before directory completions for /new', () => {
+    recordRecentWorkdir('/');
+
+    const items = newSessionArgumentCompletions('/') ?? [];
+
+    expect(items.length).toBeGreaterThan(1);
+    expect(items[0]).toEqual({ value: '/', label: '/', description: 'Recent directory' });
+    // Filesystem completions keep their trailing-slash directory labels.
+    expect(items.slice(1).every((item) => item.value.endsWith('/'))).toBe(true);
+  });
+
+  it('offers recent workdirs for ssh:// prefixes where no fs completion exists', () => {
+    recordRecentWorkdir('ssh://gpu24/home/user/proj');
+    recordRecentWorkdir('ssh://other/home/user/proj');
+    recordRecentWorkdir('/local/proj');
+
+    const items = newSessionArgumentCompletions('ssh://g') ?? [];
+
+    expect(items).toEqual([
+      {
+        value: 'ssh://gpu24/home/user/proj',
+        label: 'ssh://gpu24/home/user/proj',
+        description: 'Recent directory',
+      },
+    ]);
+    // A non-matching prefix still yields nothing (no filesystem fallback).
+    expect(newSessionArgumentCompletions('ssh://nomatch')).toBeNull();
+  });
+
+  it('prefix-filters recent workdirs and marks them as recent', () => {
+    recordRecentWorkdir('/tmp/alpha');
+    recordRecentWorkdir('/tmp/beta');
+
+    const items = newSessionArgumentCompletions('/tmp/a') ?? [];
+
+    // The matching MRU entry comes first; the non-matching one is excluded.
+    expect(items[0]).toEqual({
+      value: '/tmp/alpha',
+      label: '/tmp/alpha',
+      description: 'Recent directory',
+    });
+    expect(items.some((item) => item.value === '/tmp/beta')).toBe(false);
+  });
+
   it('defaults commands without explicit availability to idle-only', () => {
     const command: KimiSlashCommand = {
       name: 'example',
@@ -188,6 +278,7 @@ describe('built-in slash command registry', () => {
         'sessions',
         'settings',
         'status',
+        'resume-remote',
         'theme',
         'title',
         'tower',

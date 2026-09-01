@@ -31,7 +31,6 @@ import {
   TuiAltScreen,
   TuiMainScreen,
 } from '@moonshot-ai/pi-tui';
-import { resolve } from 'pathe';
 
 import type { CLIOptions } from '#/cli/options';
 import { MigrationScreenComponent, type MigrationScreenResult } from '#/migration/index';
@@ -80,6 +79,7 @@ import { SessionPickerComponent, type SessionRow } from './components/dialogs/se
 import { TrustPromptComponent, type TrustPromptChoice } from './components/dialogs/trust-prompt';
 import {
   FileMentionProvider,
+  type RemoteFileSystem,
   type SlashAutocompleteCommand,
 } from './components/editor/file-mention-provider';
 import { AssistantMessageComponent } from './components/messages/assistant-message';
@@ -171,6 +171,7 @@ import { combineSteerInput } from './utils/steer-input';
 import { startupTrace } from '#/utils/startup-trace';
 import { REPLAY_FETCH_TURN_LIMIT } from './utils/message-replay';
 import { hasPatchChanges } from './utils/object-patch';
+import { recordRecentWorkdir } from './utils/recent-workdirs';
 import { beginScreenTakeover, endScreenTakeover, type ScreenTakeover } from './utils/screen-takeover';
 import { sessionRowsForPicker } from './utils/session-picker-rows';
 import { formatStepRetryDetail, formatStepRetryLabel } from './utils/step-retry';
@@ -181,6 +182,7 @@ import { installTerminalFocusTracking } from './utils/terminal-focus';
 import { notifyTerminalOnce } from './utils/terminal-notification';
 import { installTerminalThemeTracking } from './utils/terminal-theme';
 import { detectTmuxKeyboardWarning } from './utils/tmux-keyboard';
+import { isSshWorkDirSpec, resolveNewSessionWorkDir, sameWorkDir } from './utils/workdir-spec';
 import {
   getTranscriptComponentEntry,
   markTranscriptComponent,
@@ -477,6 +479,30 @@ export class KimiTUI {
     return [...builtins, ...this.skillCommands, ...this.pluginCommands];
   }
 
+  /**
+   * The remote-filesystem backing for autocomplete in ssh:// sessions
+   * (undefined for local sessions). Methods resolve `this.session` lazily —
+   * it can be undefined at startup or mid-switch — and fail soft to empty
+   * results so completion simply closes instead of erroring.
+   */
+  private remoteFsForAutocomplete(): RemoteFileSystem | undefined {
+    if (!isSshWorkDirSpec(this.state.appState.workDir)) return undefined;
+    return {
+      readdir: async (dir) => {
+        const session = this.session;
+        if (session === undefined) return [];
+        const result = await session.readdir(dir);
+        return result.entries;
+      },
+      searchFiles: async (query) => {
+        const session = this.session;
+        if (session === undefined) return [];
+        const result = await session.searchFiles({ query });
+        return result.files;
+      },
+    };
+  }
+
   private setupAutocomplete(): void {
     const slashCommands: SlashAutocompleteCommand[] = this.getSlashCommands().map((cmd) => {
       const completer = cmd.completeArgs;
@@ -497,6 +523,11 @@ export class KimiTUI {
       this.fdPath,
       this.state.appState.additionalDirs,
       () => this.state.appState.inputMode,
+      // ssh:// remote workdirs: completion must list REMOTE files through the
+      // session's workspace fs — completing local files would leak them into a
+      // remote session. The session is resolved lazily (undefined during
+      // startup / mid-switch), failing soft to no suggestions.
+      this.remoteFsForAutocomplete(),
       skillCommandNames,
     );
     this.state.editor.setAutocompleteProvider(provider);
@@ -880,7 +911,7 @@ export class KimiTUI {
           if (target === undefined) {
             throw new Error(`Session "${startup.sessionFlag}" not found.`);
           }
-          if (resolve(target.workDir) !== resolve(workDir)) {
+          if (!sameWorkDir(target.workDir, workDir)) {
             this.state.ui.stop();
             process.stderr.write(
               `${currentTheme.fg(
@@ -2226,7 +2257,10 @@ export class KimiTUI {
     this.setAppState(patch);
   }
 
-  private async createSessionFromCurrentState(bindStartupAgent = false): Promise<Session> {
+  private async createSessionFromCurrentState(
+    bindStartupAgent = false,
+    workDirOverride?: string,
+  ): Promise<Session> {
     // Background warm-up of the cache-hint config on every new session.
     this.cacheHint.refreshConfigInBackground();
     const model = this.state.appState.model.trim();
@@ -2244,7 +2278,7 @@ export class KimiTUI {
         ? this.state.appState.planMode
         : this.options.startup.plan && this.state.appState.configDefaultPlanMode !== true;
     const options: MutableCreateSessionOptions = {
-      workDir: this.state.appState.workDir,
+      workDir: workDirOverride ?? this.state.appState.workDir,
       model,
       // With an active session, carry the live effort. Session-less (lazy
       // creation / `/new` before the first session), carry the session-only
@@ -2628,6 +2662,8 @@ export class KimiTUI {
     }
 
     await this.switchToSession(session, `Resumed session (${session.id}).`);
+    // Best-effort MRU memory for `/new [path]` completion; never throws.
+    recordRecentWorkdir(session.workDir);
     return true;
   }
 
@@ -2690,15 +2726,30 @@ export class KimiTUI {
     void this.showSessionWarnings(session);
   }
 
-  async createNewSession(): Promise<void> {
+  async createNewSession(spec?: string): Promise<void> {
     if (this.state.appState.isReplaying) {
       this.showError('Cannot start a new session while history is replaying.');
       return;
     }
 
+    const resolution = resolveNewSessionWorkDir(spec, this.state.appState.workDir);
+    if (resolution.kind === 'error') {
+      this.showError(resolution.message);
+      return;
+    }
+    // For ssh specs the raw spec goes to the SDK, which canonicalizes it,
+    // resolves the ssh config, and opens the connection. A failure rejects
+    // createSessionFromCurrentState below and keeps the current session.
+    const workDirOverride =
+      resolution.kind === 'local'
+        ? resolution.workDir
+        : resolution.kind === 'ssh'
+          ? spec?.trim()
+          : undefined;
+
     let session: Session;
     try {
-      session = await this.createSessionFromCurrentState();
+      session = await this.createSessionFromCurrentState(false, workDirOverride);
     } catch (error) {
       const msg = formatErrorMessage(error);
       this.showError(`Failed to start a new session: ${msg}`);
@@ -2707,7 +2758,17 @@ export class KimiTUI {
 
     this.resetSessionRuntime();
     await this.setSession(session);
-    this.setAppState({ sessionId: session.id });
+    const statePatch: Partial<AppState> = { sessionId: session.id };
+    // Follow the new session's workspace so TUI context (git footer, input
+    // history, @-mention completion) points at it. This is a session-boundary
+    // switch, not a mid-session cwd change. For ssh sessions the summary
+    // carries the SDK-canonicalized ssh:// workdir.
+    if (resolution.kind === 'ssh') {
+      statePatch.workDir = session.workDir;
+    } else if (workDirOverride !== undefined) {
+      statePatch.workDir = workDirOverride;
+    }
+    this.setAppState(statePatch);
     try {
       await this.activateRuntime();
       await this.syncRuntimeState(session);
@@ -2726,6 +2787,8 @@ export class KimiTUI {
     this.sessionEventHandler.startSubscription();
     this.clearTranscriptAndRedraw();
     this.showStatus(`Started a new session (${session.id}).`);
+    // Best-effort MRU memory for `/new [path]` completion; never throws.
+    recordRecentWorkdir(session.workDir);
     void this.showSessionWarnings(session);
     void this.showConfigWarningsIfAny();
   }
@@ -3969,7 +4032,7 @@ export class KimiTUI {
     session: SessionRow,
     applyStartupModes: boolean,
   ): Promise<void> {
-    if (resolve(session.work_dir) !== resolve(this.state.appState.workDir)) {
+    if (!sameWorkDir(session.work_dir, this.state.appState.workDir)) {
       await this.showResumeOtherWorkDirHint(session);
       if (applyStartupModes) await this.stop(0);
       return;

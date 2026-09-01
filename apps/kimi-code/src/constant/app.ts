@@ -62,6 +62,7 @@ export const KIMI_CODE_NATIVE_STAGING_DIR_NAME = '.staging';
 export const KIMI_CODE_NATIVE_STAGED_STATE_FILE_NAME = 'staged.json';
 export const KIMI_CODE_UPDATE_REEXEC_ENV = 'KIMI_CODE_UPDATE_REEXEC';
 export const KIMI_CODE_INPUT_HISTORY_DIR_NAME = 'user-history';
+export const KIMI_CODE_RECENT_WORKDIRS_FILE_NAME = 'recent-workdirs.json';
 export const KIMI_CODE_BANNER_DIR_NAME = 'banner';
 export const KIMI_CODE_BANNER_STATE_FILE_NAME = 'state.json';
 

@@ -15,9 +15,28 @@ import { findInlineSkillTokens } from '../../utils/inline-skill-tokens';
 const PATH_DELIMITERS = new Set([' ', '\t', '"', "'", '=']);
 const MAX_FALLBACK_SCAN = 2000;
 const MAX_FALLBACK_SUGGESTIONS = 50;
+const REMOTE_DIR_CACHE_TTL_MS = 5_000;
 
 export interface SlashAutocompleteCommand extends SlashCommand {
   readonly aliases?: readonly string[];
+}
+
+export interface RemoteFsEntry {
+  readonly name: string;
+  readonly path: string;
+  readonly isDirectory: boolean;
+}
+
+/**
+ * Client-side handle on the session's REMOTE filesystem (ssh:// workdirs),
+ * backed by the session's workspace fs service over the SDK. Both methods
+ * must fail soft (empty results) when no session is attached yet.
+ */
+export interface RemoteFileSystem {
+  /** List one remote directory (relative paths resolve against the session cwd). */
+  readdir(dir: string): Promise<readonly RemoteFsEntry[]>;
+  /** Bounded fuzzy candidate search, paths relative to the session cwd. */
+  searchFiles(query?: string): Promise<readonly { path: string; isDirectory: boolean }[]>;
 }
 
 interface FsMentionCandidate {
@@ -36,10 +55,20 @@ interface FsMentionCandidate {
  * downloading, when it is unavailable, or if fd fails to spawn. Ordinary path
  * completion is still handled by pi-tui's readdir-backed path completer. This
  * wrapper also keeps Kimi-specific slash-command guards.
+ *
+ * For ssh:// remote workdirs a `remoteFs` is injected instead: both `@`
+ * mention and ordinary path completion list REMOTE files through it (the
+ * session's workspace fs service over the SDK), so local files never leak
+ * into a remote session.
  */
 export class FileMentionProvider implements AutocompleteProvider {
   private readonly inner: CombinedAutocompleteProvider;
   private readonly additionalDirs: readonly string[];
+  private readonly remoteDirCache = new Map<
+    string,
+    { fetchedAt: number; entries: readonly RemoteFsEntry[] }
+  >();
+  private readonly remoteDirInflight = new Map<string, Promise<readonly RemoteFsEntry[]>>();
 
   constructor(
     private readonly slashCommands: SlashAutocompleteCommand[],
@@ -47,6 +76,13 @@ export class FileMentionProvider implements AutocompleteProvider {
     private readonly fdPath: string | null,
     additionalDirs: readonly string[] = [],
     private readonly getInputMode: () => 'prompt' | 'bash' = () => 'prompt',
+    /**
+     * Remote filesystem backing (ssh:// remote workdirs). When set, `@`
+     * mention and ordinary path completion list REMOTE files through this
+     * interface and never touch the local filesystem. Slash command
+     * completion is unaffected.
+     */
+    private readonly remoteFs?: RemoteFileSystem,
     private readonly skillCommandNames?: ReadonlySet<string>,
   ) {
     this.additionalDirs = additionalDirs.map((dir) => normalizePath(resolve(workDir, dir)));
@@ -78,6 +114,11 @@ export class FileMentionProvider implements AutocompleteProvider {
     // runs, so the file list never opens.
     const atPrefix = extractAtPrefix(textBeforeCursor);
     if (atPrefix !== null) {
+      // ssh:// remote workdirs: complete REMOTE files through the session's
+      // workspace fs — local files must never leak into a remote session.
+      if (this.remoteFs !== undefined) {
+        return this.getRemoteMentionSuggestions(atPrefix, options.signal);
+      }
       // fd backs `@` completion across every root (cwd + additional dirs). Fall
       // back to the filesystem scanner when fd is unavailable, not executable
       // (e.g. the managed binary was removed or lost execute permission), or if
@@ -212,6 +253,18 @@ export class FileMentionProvider implements AutocompleteProvider {
       }
     }
 
+    // ssh:// remote workdirs: pi-tui's path completer is synchronous
+    // readdirSync over the LOCAL filesystem, which is wrong/unreachable here —
+    // list the remote parent directory instead (cached per directory).
+    if (this.remoteFs !== undefined) {
+      const remote = await this.getRemotePathSuggestions(textBeforeCursor, options);
+      if (remote === null || this.getInputMode() !== 'bash') {
+        return remote;
+      }
+      // Same bash-mode dotfile filter as the local path below.
+      return { ...remote, items: remote.items.filter((item) => !isDotPrefixedEntry(item)) };
+    }
+
     // Inline skill selection: `/` after whitespace mid-input in prompt mode.
     // Runs after slash-command argument handling so known commands such as
     // `/add-dir /` keep their own argument completions.
@@ -313,6 +366,156 @@ export class FileMentionProvider implements AutocompleteProvider {
     }
     return this.inner.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
   }
+
+  /**
+   * Remote `@` mention completion: a bounded fuzzy search against the remote
+   * workspace fs per keystroke — the engine ranks and caps server-side
+   * (gitignore respected, `.git` excluded), the editor drops stale responses
+   * via the abort signal. Remote candidates are posix paths relative to the
+   * remote session cwd.
+   */
+  private async getRemoteMentionSuggestions(
+    atPrefix: string,
+    signal: AbortSignal,
+  ): Promise<AutocompleteSuggestions | null> {
+    if (signal.aborted) return null;
+    const query = atPrefix.slice(1);
+
+    // Path-ish queries (`src/comp`) miss the engine's name-fuzzy search —
+    // narrow by listing the remote directory part instead.
+    if (query.includes('/')) {
+      return this.getRemoteMentionDirSuggestions(atPrefix, query, signal);
+    }
+
+    const remoteFs = this.remoteFs;
+    if (remoteFs === undefined) return null;
+    // Only a resolved list is used; a failed search retries on the next
+    // keystroke instead of sticking as an empty cache entry.
+    const files = await remoteFs.searchFiles(query).then(
+      (files) => files,
+      () => [] as readonly { path: string; isDirectory: boolean }[],
+    );
+    if (signal.aborted || files.length === 0) return null;
+
+    const items = files
+      .slice(0, MAX_FALLBACK_SUGGESTIONS)
+      .map((file) =>
+        toMentionItem({
+          path: file.path,
+          absolutePath: remoteAbsolutePath(this.workDir, file.path),
+          isDirectory: file.isDirectory,
+        }),
+      );
+    return { prefix: atPrefix, items };
+  }
+
+  /**
+   * `@` mention narrowing for path-ish queries: list the remote directory
+   * part and prefix-filter by the trailing fragment, keeping the full
+   * relative path in the mention value.
+   */
+  private async getRemoteMentionDirSuggestions(
+    atPrefix: string,
+    query: string,
+    signal: AbortSignal,
+  ): Promise<AutocompleteSuggestions | null> {
+    const slashIndex = query.lastIndexOf('/');
+    const dirPart = query.slice(0, slashIndex + 1);
+    const fragment = query.slice(slashIndex + 1);
+    const listDir = dirPart.replace(/\/+$/, '') || '/';
+
+    const entries = await this.getRemoteDirEntries(listDir);
+    if (signal.aborted) return null;
+
+    const lowerFragment = fragment.toLowerCase();
+    const candidates: FsMentionCandidate[] = [];
+    for (const entry of entries) {
+      if (fragment.length > 0 && !entry.name.toLowerCase().startsWith(lowerFragment)) continue;
+      candidates.push({
+        path: `${dirPart}${entry.name}`,
+        absolutePath: remoteAbsolutePath(this.workDir, `${dirPart}${entry.name}`),
+        isDirectory: entry.isDirectory,
+      });
+    }
+    if (candidates.length === 0) return null;
+
+    // Empty query ranking: directories first, then alphabetically.
+    const ranked = rankFsMentionCandidates(candidates, '').slice(0, MAX_FALLBACK_SUGGESTIONS);
+    return { prefix: atPrefix, items: ranked.map(toMentionItem) };
+  }
+
+  /**
+   * Remote equivalent of pi-tui's getFileSuggestions: split the token at the
+   * last `/`, list the parent remotely, filter by the typed fragment. Items
+   * are shaped exactly like pi-tui's (trailing `/` for directories, quotes
+   * when the path contains spaces) so pi-tui's applyCompletion keeps working.
+   */
+  private async getRemotePathSuggestions(
+    textBeforeCursor: string,
+    options: { signal: AbortSignal; force?: boolean },
+  ): Promise<AutocompleteSuggestions | null> {
+    const prefix = extractRemotePathPrefix(textBeforeCursor, options.force ?? false);
+    if (prefix === null || options.signal.aborted) return null;
+
+    const isQuotedPrefix = prefix.startsWith('"');
+    const rawPrefix = isQuotedPrefix ? prefix.slice(1) : prefix;
+    const slashIndex = rawPrefix.lastIndexOf('/');
+    const dirPart = slashIndex === -1 ? '' : rawPrefix.slice(0, slashIndex + 1);
+    const fragment = slashIndex === -1 ? rawPrefix : rawPrefix.slice(slashIndex + 1);
+    // Relative dirs resolve against the remote session cwd server-side.
+    const listDir = dirPart.length === 0 ? '.' : dirPart.replace(/\/+$/, '') || '/';
+
+    const entries = await this.getRemoteDirEntries(listDir);
+    if (options.signal.aborted) return null;
+
+    const lowerFragment = fragment.toLowerCase();
+    const items: AutocompleteItem[] = [];
+    for (const entry of entries) {
+      if (!entry.name.toLowerCase().startsWith(lowerFragment)) continue;
+      const pathValue = `${dirPart}${entry.name}${entry.isDirectory ? '/' : ''}`;
+      const value =
+        isQuotedPrefix || pathValue.includes(' ') ? `"${pathValue}"` : pathValue;
+      items.push({
+        value,
+        label: `${entry.name}${entry.isDirectory ? '/' : ''}`,
+      });
+    }
+    if (items.length === 0) return null;
+
+    // Directories first, then alphabetically (pi-tui's ordering).
+    items.sort((a, b) => {
+      const aIsDir = a.label.endsWith('/');
+      const bIsDir = b.label.endsWith('/');
+      if (aIsDir !== bIsDir) return aIsDir ? -1 : 1;
+      return a.label.localeCompare(b.label);
+    });
+    return { items, prefix };
+  }
+
+  private getRemoteDirEntries(dir: string): Promise<readonly RemoteFsEntry[]> {
+    const remoteFs = this.remoteFs;
+    if (remoteFs === undefined) return Promise.resolve([]);
+    const cached = this.remoteDirCache.get(dir);
+    if (cached !== undefined && Date.now() - cached.fetchedAt < REMOTE_DIR_CACHE_TTL_MS) {
+      return Promise.resolve(cached.entries);
+    }
+    const inflight = this.remoteDirInflight.get(dir);
+    if (inflight !== undefined) return inflight;
+    const promise = remoteFs
+      .readdir(dir)
+      .then(
+        (entries) => {
+          this.remoteDirCache.set(dir, { fetchedAt: Date.now(), entries });
+          return entries;
+        },
+        () => [] as readonly RemoteFsEntry[],
+      )
+      .finally(() => {
+        this.remoteDirInflight.delete(dir);
+      });
+    this.remoteDirInflight.set(dir, promise);
+    return promise;
+  }
 }
 
 /**
@@ -351,6 +554,59 @@ export function extractAtPrefix(text: string): string | null {
   }
   if (text[tokenStart] !== '@') return null;
   return text.slice(tokenStart);
+}
+
+/**
+ * Extract a path-like prefix for remote path completion. Mirrors pi-tui's
+ * extractPathPrefix (quoted-prefix handling included), minus the `@` cases —
+ * those are intercepted by the mention branch first.
+ */
+function extractRemotePathPrefix(text: string, force: boolean): string | null {
+  const quoteStart = findUnclosedQuoteStart(text);
+  if (
+    quoteStart !== null &&
+    (quoteStart === 0 || PATH_DELIMITERS.has(text[quoteStart - 1] ?? ''))
+  ) {
+    return text.slice(quoteStart);
+  }
+
+  let tokenStart = 0;
+  for (let i = text.length - 1; i >= 0; i -= 1) {
+    if (PATH_DELIMITERS.has(text[i] ?? '')) {
+      tokenStart = i + 1;
+      break;
+    }
+  }
+  const pathPrefix = text.slice(tokenStart);
+
+  if (force) return pathPrefix;
+  if (
+    pathPrefix.includes('/') ||
+    pathPrefix.startsWith('.') ||
+    pathPrefix.startsWith('~/')
+  ) {
+    return pathPrefix;
+  }
+  if (pathPrefix === '' && text.endsWith(' ')) return pathPrefix;
+  return null;
+}
+
+/** Index of the opening quote of an unclosed `"` run, or null. */
+function findUnclosedQuoteStart(text: string): number | null {
+  let inQuotes = false;
+  let quoteStart = -1;
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === '"') {
+      inQuotes = !inQuotes;
+      if (inQuotes) quoteStart = i;
+    }
+  }
+  return inQuotes ? quoteStart : null;
+}
+
+/** Mention-item description for a remote path: the ssh spec joined with the relative path. */
+function remoteAbsolutePath(workDir: string, relativePath: string): string {
+  return `${workDir.replace(/\/+$/, '')}/${relativePath}`;
 }
 
 function isExecutableFd(fdPath: string): boolean {

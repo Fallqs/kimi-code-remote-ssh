@@ -4,6 +4,8 @@ import { basename, dirname, join, relative, resolve } from 'pathe';
 
 import type { AutocompleteItem } from '@moonshot-ai/pi-tui';
 
+import { loadRecentWorkdirs } from '../utils/recent-workdirs';
+import { isSshWorkDirSpec } from '../utils/workdir-spec';
 import { completeLeadingArg, type ArgCompletionSpec } from './complete-args';
 import type { KimiSlashCommand, SlashCommandAvailability } from './types';
 
@@ -63,17 +65,39 @@ export function towerArgumentCompletions(argumentPrefix: string): AutocompleteIt
 
 /** Argument autocompletion for the `/add-dir` command. */
 export function addDirArgumentCompletions(argumentPrefix: string): AutocompleteItem[] | null {
-  if (isPathLikeAddDirArgument(argumentPrefix)) {
-    return completeAddDirPath(argumentPrefix);
+  if (isPathLikeDirectoryArgument(argumentPrefix)) {
+    return completeDirectoryPath(argumentPrefix);
   }
   return completeLeadingArg(ADD_DIR_ARG_COMPLETIONS, argumentPrefix);
 }
 
-function isPathLikeAddDirArgument(argumentPrefix: string): boolean {
+/** Argument autocompletion for the `/new` command (recent workdirs + local directory paths). */
+export function newSessionArgumentCompletions(argumentPrefix: string): AutocompleteItem[] | null {
+  const recent = recentWorkdirCompletions(argumentPrefix);
+  // ssh:// input has no filesystem completion — the MRU entries are the only source.
+  if (isSshWorkDirSpec(argumentPrefix)) return recent.length > 0 ? recent : null;
+  if (!isPathLikeDirectoryArgument(argumentPrefix)) return recent.length > 0 ? recent : null;
+  const items = [...recent, ...(completeDirectoryPath(argumentPrefix) ?? [])];
+  return items.length > 0 ? items : null;
+}
+
+/** MRU workdirs matching the prefix, offered before filesystem completions. */
+function recentWorkdirCompletions(argumentPrefix: string): AutocompleteItem[] {
+  const prefix = argumentPrefix.toLowerCase();
+  return loadRecentWorkdirs()
+    .filter((workDir) => workDir.toLowerCase().startsWith(prefix))
+    .map((workDir) => ({
+      value: workDir,
+      label: workDir,
+      description: 'Recent directory',
+    }));
+}
+
+function isPathLikeDirectoryArgument(argumentPrefix: string): boolean {
   return argumentPrefix === '.' || argumentPrefix === '..' || argumentPrefix.startsWith('./') || argumentPrefix.startsWith('../') || argumentPrefix.startsWith('/') || argumentPrefix.startsWith('~');
 }
 
-function completeAddDirPath(argumentPrefix: string): AutocompleteItem[] | null {
+function completeDirectoryPath(argumentPrefix: string): AutocompleteItem[] | null {
   const normalizedPrefix = argumentPrefix === '~' ? '~/' : argumentPrefix;
   const expandedPrefix = expandHomePrefix(normalizedPrefix);
   const parentInput = getDirectoryCompletionParentInput(normalizedPrefix, expandedPrefix);
@@ -249,8 +273,10 @@ export const BUILTIN_SLASH_COMMANDS = [
   {
     name: 'new',
     aliases: ['clear'],
-    description: 'Start a fresh session in the current workspace',
+    description: 'Start a fresh session in the current or given directory',
     priority: 80,
+    argumentHint: '[path]',
+    completeArgs: newSessionArgumentCompletions,
   },
   {
     name: 'sessions',
@@ -287,6 +313,13 @@ export const BUILTIN_SLASH_COMMANDS = [
     availability: 'idle-only',
     argumentHint: '[list] | <path>',
     completeArgs: addDirArgumentCompletions,
+  },
+  {
+    name: 'resume-remote',
+    aliases: [],
+    description: 'Resume an interrupted ssh remote-workspace connection',
+    priority: 40,
+    availability: 'always',
   },
   {
     name: 'experiments',
