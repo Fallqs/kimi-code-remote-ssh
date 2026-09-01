@@ -1,3 +1,4 @@
+/* oxlint-disable eslint-plugin-jest/no-standalone-expect -- itBash wraps it, so expects inside itBash blocks are legitimate. */
 import { join } from 'node:path';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
