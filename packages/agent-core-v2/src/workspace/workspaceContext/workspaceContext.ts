@@ -1,7 +1,7 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { ScopeSeed } from '#/_base/di/scope';
 
-export type WorkspaceSource = 'local';
+export type WorkspaceSource = string;
 
 export interface WorkspaceMeta {
   readonly id: string;

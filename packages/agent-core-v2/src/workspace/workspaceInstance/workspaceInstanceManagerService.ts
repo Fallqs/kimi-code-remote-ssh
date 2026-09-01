@@ -28,6 +28,7 @@ import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStor
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { Error2, ErrorCodes } from '#/errors';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
+import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { LocalRuntimeProviderFactory } from '#/runtime/localRuntime';
 import { canonicalWorkspaceRoot } from '#/_base/utils/paths';
 import type { Runtime, RuntimeBinding, RuntimeCapability, RuntimeLease } from '#/runtime/runtime';
@@ -35,6 +36,8 @@ import { RuntimeError, RuntimeRegistry } from '#/runtime/runtimeRegistry';
 import type { RuntimeProviderFactory } from '#/runtime/runtimeProvider';
 import { SharedRuntimeUnitHostFactory, type RuntimeUnitHandle, type RuntimeUnitHostFactory } from '#/runtime/runtimeUnitHost';
 import { SessionLifecycleService } from '#/workspace/sessionLifecycle/sessionLifecycleService';
+import { SshRuntimeProviderFactory } from '#/workspace/workspaceSsh/sshRuntimeProvider';
+import { canonicalizeSshWorkDirSpec, isSshWorkDirSpec, parseSshWorkDirSpec } from '@moonshot-ai/remote-ssh';
 
 import { WorkspaceInstance } from './workspaceInstance';
 import { IRuntimeResolver, IWorkspaceInstanceManager, type WorkspaceInstanceRef } from './workspaceInstanceManager';
@@ -54,6 +57,7 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IWorkspaceService private readonly workspaces: IWorkspaceService,
     @IHostEnvironment private readonly environment: IHostEnvironment,
+    @IHostFileSystem private readonly hostFs: IHostFileSystem,
     @IAppStateService private readonly appState: IAppStateService,
     @IConfigService private readonly config: IConfigService,
     @IEventService private readonly event: IEventService,
@@ -79,6 +83,7 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
     private readonly unitHostFactory: RuntimeUnitHostFactory = new SharedRuntimeUnitHostFactory(),
   ) {
     this.providers.set('local', new LocalRuntimeProviderFactory());
+    this.providers.set('ssh', new SshRuntimeProviderFactory());
   }
 
   get(workspaceId: string): WorkspaceInstance | undefined {
@@ -186,6 +191,9 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
 
   private async materialize(workspace: Workspace): Promise<WorkspaceInstance> {
     await this.environment.ready;
+    const sshRoot = isSshWorkDirSpec(workspace.root)
+      ? parseSshWorkDirSpec(canonicalizeSshWorkDirSpec(workspace.root)).path
+      : undefined;
     const runtimes = new RuntimeRegistry(workspace.id);
     const unitHost = this.unitHostFactory.create(this.instantiation, runtimes);
     const instance = new WorkspaceInstance(
@@ -196,7 +204,8 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
         _serviceBrand: undefined,
         workspaceId: workspace.id,
         cwd: workspace.root,
-        source: 'local',
+        source: sshRoot === undefined ? 'local' : 'ssh',
+        remoteCwd: sshRoot,
         meta: workspace,
         persistenceScope: `${this.bootstrap.scope('sessions')}/${workspace.id}`,
       },
@@ -227,7 +236,7 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
           this.docs,
           this.storage,
           this.log,
-          input.fs,
+          this.hostFs,
           this.event,
           this.telemetry,
           this.flags,

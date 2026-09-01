@@ -1,11 +1,14 @@
 import { basename, isAbsolute } from 'pathe';
+import { canonicalizeSshWorkDirSpec, isSshWorkDirSpec } from '@moonshot-ai/remote-ssh';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { encodeWorkDirKey, workspaceRootKey } from '#/_base/utils/workdir-slug';
 import { IEventService } from '#/app/event/event';
 import { ErrorCodes, Error2, unwrapErrorCause } from '#/errors';
+import { IFlagService } from '#/app/flag/flag';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { SSH_WORKDIR_FLAG_ID } from '#/workspace/workspaceSsh/flag';
 
 import { IWorkspaceService, type Workspace, type WorkspaceUpdate } from './workspace';
 import {
@@ -32,6 +35,7 @@ export class WorkspaceService implements IWorkspaceService {
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
     @IHostFileSystem private readonly hostFs: IHostFileSystem,
     @IEventService private readonly event: IEventService,
+    @IFlagService private readonly flags?: IFlagService,
   ) {}
 
   list(): Promise<readonly Workspace[]> {
@@ -53,24 +57,42 @@ export class WorkspaceService implements IWorkspaceService {
 
   createOrTouch(root: string, name?: string): Promise<Workspace> {
     return this.runExclusive(async () => {
-      let stat;
-      try {
-        stat = await this.hostFs.stat(root);
-      } catch (error) {
-        const code = (unwrapErrorCause(error) as NodeJS.ErrnoException | undefined)?.code;
-        if (code === 'ENOENT' || code === 'ENOTDIR') {
-          throw new Error2(ErrorCodes.FS_PATH_NOT_FOUND, `workspace root ${root} does not exist`);
+      if (isSshWorkDirSpec(root)) {
+        if (this.flags?.enabled(SSH_WORKDIR_FLAG_ID) !== true) {
+          throw new Error2(
+            ErrorCodes.WORKSPACE_SSH_DISABLED,
+            `ssh workspace roots are experimental; enable the ${SSH_WORKDIR_FLAG_ID} flag to use ${root}`,
+          );
         }
-        throw error;
-      }
-      if (!stat.isDirectory) {
         try {
-          stat = await this.hostFs.stat(await this.hostFs.realpath(root));
-        } catch {
+          root = canonicalizeSshWorkDirSpec(root);
+        } catch (error) {
+          throw new Error2(
+            ErrorCodes.VALIDATION_FAILED,
+            `invalid ssh workspace root ${root}`,
+            { cause: error instanceof Error ? error : undefined },
+          );
         }
-      }
-      if (!stat.isDirectory) {
-        throw new Error2(ErrorCodes.FS_PATH_NOT_FOUND, `workspace root ${root} is not a directory`);
+      } else {
+        let stat;
+        try {
+          stat = await this.hostFs.stat(root);
+        } catch (error) {
+          const code = (unwrapErrorCause(error) as NodeJS.ErrnoException | undefined)?.code;
+          if (code === 'ENOENT' || code === 'ENOTDIR') {
+            throw new Error2(ErrorCodes.FS_PATH_NOT_FOUND, `workspace root ${root} does not exist`);
+          }
+          throw error;
+        }
+        if (!stat.isDirectory) {
+          try {
+            stat = await this.hostFs.stat(await this.hostFs.realpath(root));
+          } catch {
+          }
+        }
+        if (!stat.isDirectory) {
+          throw new Error2(ErrorCodes.FS_PATH_NOT_FOUND, `workspace root ${root} is not a directory`);
+        }
       }
       await this.ensureMerged();
       const catalog = await this.loadCatalog();

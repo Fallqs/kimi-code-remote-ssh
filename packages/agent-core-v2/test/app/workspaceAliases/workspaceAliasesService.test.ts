@@ -20,6 +20,7 @@ import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { IEventService } from '#/app/event/event';
+import { IFlagService } from '#/app/flag/flag';
 import { IWorkspaceService, type Workspace } from '#/app/workspace/workspace';
 import { WorkspaceService } from '#/app/workspace/workspaceService';
 import { FileWorkspacePersistence } from '#/app/workspace/fileWorkspacePersistence';
@@ -96,6 +97,7 @@ describe('WorkspaceAliasesService (file-backed)', () => {
         publish: () => {},
         subscribe: () => ({ dispose: () => {} }),
       } as unknown as IEventService),
+      stubPair(IFlagService, { enabled: () => false } as unknown as IFlagService),
     ]);
     currentHost = host;
     return host.app.accessor.get(IWorkspaceAliases);

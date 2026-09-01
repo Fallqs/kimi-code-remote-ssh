@@ -245,6 +245,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       sessionDir,
       metaScope,
       cwd: opts.workDir,
+      remoteCwd: this.workspaceContext.remoteCwd,
       scope: (subKey?: string): string =>
         subKey === undefined || subKey === '' ? sessionScope : `${sessionScope}/${subKey}`,
     };

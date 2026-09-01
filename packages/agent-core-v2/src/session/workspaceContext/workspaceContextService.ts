@@ -28,14 +28,18 @@ export class SessionWorkspaceContextService extends Service implements ISessionW
     super();
     this.states.contributeState(workspaceContextWorkDirKey);
     this.states.contributeState(workspaceContextAdditionalDirsKey);
-    this.states.set(workspaceContextWorkDirKey, resolve(ctx.cwd));
+    this.states.set(workspaceContextWorkDirKey, ctx.remoteCwd ?? resolve(ctx.cwd));
     this.states.set(workspaceContextAdditionalDirsKey, [
-      ...new Set(workspaceInfo.additionalDirs.map((d) => resolve(d))),
+      ...new Set(
+        workspaceInfo.additionalDirs.map((d) => (ctx.remoteCwd === undefined ? resolve(d) : d)),
+      ),
     ]);
     this._register(
       workspaceInfo.onDidChange(() => {
         this.states.set(workspaceContextAdditionalDirsKey, [
-          ...new Set(workspaceInfo.additionalDirs.map((d) => resolve(d))),
+          ...new Set(
+            workspaceInfo.additionalDirs.map((d) => (ctx.remoteCwd === undefined ? resolve(d) : d)),
+          ),
         ]);
       }),
     );

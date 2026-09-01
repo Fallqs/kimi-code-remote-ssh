@@ -113,7 +113,7 @@ export class WorkspaceFsService implements IWorkspaceFsService {
   ) {
     this.workspaceId = workspace.workspaceId;
     this.path = resolver.inspect({ workspaceId: workspace.workspaceId, runtimeId }).path;
-    this.workDir = this.path.resolve(workspace.cwd);
+    this.workDir = this.path.resolve(workspace.remoteCwd ?? workspace.cwd);
   }
 
   private resolvePathInput(rel: string): string {

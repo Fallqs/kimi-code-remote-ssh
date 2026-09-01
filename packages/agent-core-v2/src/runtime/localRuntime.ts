@@ -1,6 +1,8 @@
 import * as posixPath from 'node:path/posix';
 import * as win32Path from 'node:path/win32';
 
+import { isSshWorkDirSpec } from '@moonshot-ai/remote-ssh';
+
 import { Emitter } from '#/_base/event';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
@@ -101,6 +103,7 @@ export class LocalRuntimeProviderFactory implements RuntimeProviderFactory {
   };
 
   async attach(context: RuntimeProviderContext, host: RuntimeProviderHost): Promise<RuntimeProviderAttachment> {
+    if (isSshWorkDirSpec(context.root)) return { dispose() {} };
     const handle = host.registerRuntime(new LocalRuntime(
       context.id,
       host.get(IHostEnvironment),

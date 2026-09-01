@@ -19,6 +19,7 @@ import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageSe
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { IEventService } from '#/app/event/event';
+import { IFlagService } from '#/app/flag/flag';
 import type { Event2 } from '#/app/event/event2';
 import { IWorkspaceService } from '#/app/workspace/workspace';
 import { WorkspaceService } from '#/app/workspace/workspaceService';
@@ -77,6 +78,7 @@ describe('WorkspaceService (file-backed)', () => {
         },
         subscribe: () => ({ dispose: () => {} }),
       } as unknown as IEventService),
+      stubPair(IFlagService, { enabled: () => false } as unknown as IFlagService),
     ]);
     currentHost = host;
     return host.app.accessor.get(IWorkspaceService);
