@@ -62,10 +62,12 @@ import type {
   SessionTodoItem,
   SessionUsage,
   PromptInput,
+  ReaddirResult,
   PromptSkillActivation,
   RenameSessionInput,
   ResumeSessionInput,
   ResumedSessionSummary,
+  SearchFilesResult,
   SessionSummary,
   SessionSummaryPage,
   SkillSummary,
@@ -175,6 +177,16 @@ export interface ReconnectMcpServerRpcInput extends SessionIdRpcInput {
    * entries reject an explicit config (theirs is read-only).
    */
   readonly config?: McpServerConfig;
+}
+
+export interface ReaddirRpcInput extends SessionIdRpcInput {
+  /** Directory to list; relative paths resolve against the session working directory. */
+  readonly path: string;
+}
+
+export interface SearchFilesRpcInput extends SessionIdRpcInput {
+  readonly query?: string;
+  readonly limit?: number;
 }
 
 type ResolvedCoreAPI = RPCMethods<CoreAPI>;
@@ -1006,6 +1018,36 @@ export abstract class SDKRpcClientBase {
       name: input.name,
       config: input.config,
     });
+  }
+
+  /**
+   * List one directory through the session's workspace filesystem — the
+   * REMOTE filesystem for ssh:// sessions, so client-side path completion
+   * can offer remote files instead of (wrongly) the local filesystem. The v1
+   * engine has no workspace-fs surface, so the base fails loudly; only the
+   * v2 client implements this.
+   */
+  async readdir(input: ReaddirRpcInput): Promise<ReaddirResult> {
+    void input;
+    throw new KimiError(
+      ErrorCodes.NOT_IMPLEMENTED,
+      'readdir over the workspace filesystem is not supported by this engine.',
+    );
+  }
+
+  /**
+   * Bounded fuzzy file search through the session's workspace filesystem
+   * (server-side ranked and capped, paths relative to the session working
+   * directory). Backs `@` mention completion for ssh:// sessions. The v1
+   * engine has no workspace-fs surface, so the base fails loudly; only the
+   * v2 client implements this.
+   */
+  async searchFiles(input: SearchFilesRpcInput): Promise<SearchFilesResult> {
+    void input;
+    throw new KimiError(
+      ErrorCodes.NOT_IMPLEMENTED,
+      'searchFiles over the workspace filesystem is not supported by this engine.',
+    );
   }
 
   /**

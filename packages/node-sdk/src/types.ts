@@ -127,6 +127,33 @@ export type WorkspaceSshConnectionState =
   | 'blocked'
   | 'closed';
 
+export interface ReaddirEntry {
+  /** Entry basename. */
+  readonly name: string;
+  /** Path relative to the session working directory (forward slashes). */
+  readonly path: string;
+  readonly isDirectory: boolean;
+}
+
+export interface ReaddirResult {
+  /** One directory level, directories sorted first. */
+  readonly entries: readonly ReaddirEntry[];
+}
+
+export interface SearchFileEntry {
+  /** Path relative to the session working directory (forward slashes). */
+  readonly path: string;
+  readonly isDirectory: boolean;
+}
+
+export interface SearchFilesResult {
+  /**
+   * Bounded fuzzy file search for `@` mentions — server-side ranked and
+   * capped, `.git` internals excluded, gitignore respected by default.
+   */
+  readonly files: readonly SearchFileEntry[];
+}
+
 /** Metadata of one upload in the engine's daemon file store. */
 export type { FileMeta } from '@moonshot-ai/agent-core-v2/app/file/fileService';
 

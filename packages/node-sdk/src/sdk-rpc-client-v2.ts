@@ -252,8 +252,10 @@ import {
   type ActivatePluginCommandRpcInput,
   type ActivateSkillRpcInput,
   type ImportContextRpcInput,
+  type ReaddirRpcInput,
   type ReconnectMcpServerRpcInput,
   type ReloadSessionRpcInput,
+  type SearchFilesRpcInput,
   type RunCommandRpcInput,
   type SessionIdRpcInput,
   type SwitchSessionRuntimeRpcInput,
@@ -306,11 +308,13 @@ import type {
   PluginCommandDef,
   PluginInfo,
   PluginSummary,
+  ReaddirResult,
   ReloadSummary,
   RenameSessionInput,
   ResumeSessionInput,
   ResumedAgentState,
   ResumedSessionSummary,
+  SearchFilesResult,
   SessionPlan,
   SessionStatus,
   SessionSummary,
@@ -707,6 +711,56 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
       .getOrCreate({ root: workDir });
     const runtime = instance.runtimes.current('local');
     return runtime instanceof SshRuntime ? runtime.connection : undefined;
+  }
+
+  /**
+   * klient has no workspace-fs facade; composed directly from the engine via
+   * {@link engineAccessor} — the session program's `IWorkspaceFsService`
+   * behind kap-server's `fs:list` route. Backs client-side path completion.
+   */
+  override async readdir(input: ReaddirRpcInput): Promise<ReaddirResult> {
+    const program = await programForSession(this.engineAccessor, input.sessionId);
+    if (program === undefined) throw new Error(`no live session ${input.sessionId}`);
+    const fs = program.fs;
+    const { items } = await fs.list({
+      path: input.path,
+      depth: 1,
+      limit: 1000,
+      show_hidden: true,
+      follow_gitignore: false,
+      sort: 'type_first',
+      include_git_status: false,
+    });
+    return {
+      entries: items.map((entry) => ({
+        name: entry.name,
+        path: entry.path,
+        isDirectory: entry.kind === 'directory',
+      })),
+    };
+  }
+
+  /**
+   * The engine's bounded fuzzy `fs:search` — same service and semantics as
+   * {@link readdir}, so `@` mention completion matches what kap-server
+   * serves kimi-web (server-side ranked, capped at `limit`, `.git` excluded,
+   * gitignore respected).
+   */
+  override async searchFiles(input: SearchFilesRpcInput): Promise<SearchFilesResult> {
+    const program = await programForSession(this.engineAccessor, input.sessionId);
+    if (program === undefined) throw new Error(`no live session ${input.sessionId}`);
+    const fs = program.fs;
+    const { items } = await fs.search({
+      query: input.query ?? '',
+      limit: input.limit ?? 50,
+      follow_gitignore: true,
+    });
+    return {
+      files: items.map((hit) => ({
+        path: hit.path,
+        isDirectory: hit.kind === 'directory',
+      })),
+    };
   }
 
   /**

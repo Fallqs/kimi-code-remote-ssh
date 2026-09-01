@@ -21,6 +21,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   buildDaemonFileUrl,
+  createKimiHarness,
   createKimiHarnessV2,
   ErrorCodes,
   isDaemonFileUrl,
@@ -1477,6 +1478,101 @@ describe('removeProviderFromConfig', () => {
     const next = removeProviderFromConfig(config, 'b');
 
     expect(next.secondaryModel).toEqual({ defaultModel: 'a/m1' });
+  });
+});
+
+describe('SDKRpcClientV2 session workspace fs (readdir / searchFiles)', () => {
+  it('readdir lists one directory level of the session workdir, directories first', async () => {
+    const { harness } = await makeHarness();
+    const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-fs-work-'));
+    tempDirs.push(workDir);
+    await mkdir(join(workDir, 'src'));
+    await writeFile(join(workDir, 'src', 'index.ts'), 'index');
+    await writeFile(join(workDir, 'README.md'), 'readme');
+    try {
+      const session = await harness.createSession({ workDir });
+      try {
+        const root = await session.readdir('.');
+        expect(root.entries.map((entry) => [entry.name, entry.isDirectory])).toEqual([
+          ['src', true],
+          ['README.md', false],
+        ]);
+
+        const src = await session.readdir('src');
+        expect(src.entries).toEqual([
+          { name: 'index.ts', path: 'src/index.ts', isDirectory: false },
+        ]);
+      } finally {
+        await session.close();
+      }
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('searchFiles returns the engine-ranked fuzzy matches, gitignored and .git files excluded', async () => {
+    const { harness } = await makeHarness();
+    const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-fs-work-'));
+    tempDirs.push(workDir);
+    await mkdir(join(workDir, 'src'));
+    await writeFile(join(workDir, 'src', 'index.ts'), 'index');
+    await writeFile(join(workDir, 'src', 'utils.ts'), 'utils');
+    await writeFile(join(workDir, 'README.md'), 'readme');
+    await writeFile(join(workDir, '.gitignore'), 'secret.txt\n');
+    await writeFile(join(workDir, 'secret.txt'), 'secret');
+    await mkdir(join(workDir, '.git'));
+    await writeFile(join(workDir, '.git', 'index'), 'git');
+    try {
+      const session = await harness.createSession({ workDir });
+      try {
+        const indexOnly = await session.searchFiles({ query: 'index' });
+        expect(indexOnly.files).toEqual([{ path: 'src/index.ts', isDirectory: false }]);
+
+        // The empty query lists the visible workdir root (the `@` with no
+        // filter case): hidden and gitignored entries stay out.
+        const root = await session.searchFiles({ query: '' });
+        expect(root.files.map((file) => [file.path, file.isDirectory])).toEqual([
+          ['src', true],
+          ['README.md', false],
+        ]);
+
+        // `.git` internals never surface (a plain dotfile still does).
+        expect(await session.searchFiles({ query: 'git' })).toEqual({
+          files: [{ path: '.gitignore', isDirectory: false }],
+        });
+        expect(await session.searchFiles({ query: 'secret' })).toEqual({ files: [] });
+
+        // The bound is applied server-side.
+        const capped = await session.searchFiles({ query: 's', limit: 1 });
+        expect(capped.files).toHaveLength(1);
+      } finally {
+        await session.close();
+      }
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('fails loudly with not_implemented on the v1 engine instead of listing the local filesystem', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v1-'));
+    const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v1-fs-work-'));
+    tempDirs.push(homeDir, workDir);
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    try {
+      const session = await harness.createSession({ workDir });
+      try {
+        await expect(session.readdir('.')).rejects.toMatchObject({
+          code: ErrorCodes.NOT_IMPLEMENTED,
+        });
+        await expect(session.searchFiles({ query: 'a' })).rejects.toMatchObject({
+          code: ErrorCodes.NOT_IMPLEMENTED,
+        });
+      } finally {
+        await session.close();
+      }
+    } finally {
+      await harness.close();
+    }
   });
 });
 

@@ -28,11 +28,13 @@ import type {
   PluginInfo,
   PluginSummary,
   PromptInput,
+  ReaddirResult,
   PromptSkillActivation,
   ReloadSessionOptions,
   ReloadSummary,
   ResumedSessionState,
   ResumedSessionSummary,
+  SearchFilesResult,
   SessionPlan,
   SessionStatus,
   SessionSummary,
@@ -623,6 +625,34 @@ export class Session {
   async reconnectMcpServer(name: string, config?: McpServerConfig): Promise<void> {
     this.ensureOpen();
     await this.rpc.reconnectMcpServer({ sessionId: this.id, name, config });
+  }
+
+  /**
+   * List a directory through the session's workspace filesystem — the REMOTE
+   * filesystem for ssh:// sessions, so client-side path completion can offer
+   * remote files instead of (wrongly) the local filesystem. `path` is
+   * relative to the session working directory and confined to the workspace.
+   * Only the agent-core-v2 engine implements this.
+   */
+  async readdir(path: string): Promise<ReaddirResult> {
+    this.ensureOpen();
+    return this.rpc.readdir({ sessionId: this.id, path });
+  }
+
+  /**
+   * Bounded fuzzy file search through the session's workspace filesystem,
+   * paths relative to the session working directory. Server-side ranked and
+   * capped (default 50, `.git` excluded, gitignore respected). Backs `@`
+   * mention completion for ssh:// sessions. Only the agent-core-v2 engine
+   * implements this.
+   */
+  async searchFiles(options: { query?: string; limit?: number } = {}): Promise<SearchFilesResult> {
+    this.ensureOpen();
+    return this.rpc.searchFiles({
+      sessionId: this.id,
+      query: options.query,
+      limit: options.limit,
+    });
   }
 
   async listPlugins(): Promise<readonly PluginSummary[]> {
