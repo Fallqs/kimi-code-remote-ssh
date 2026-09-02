@@ -71,6 +71,8 @@ const MIGRATION_PLAN: MigrationPlan = {
   hasConfig: false,
   hasMcp: false,
   hasUserHistory: false,
+  hasSkills: false,
+  hasPlans: false,
   oauthCredentials: [],
   workdirs: [],
   detectedPlugins: [],

@@ -20,10 +20,11 @@ import { DEFAULT_PERMISSION_MODE_SECTION } from '#/agent/permissionMode/configSe
 import { permissionModeConfiguredKey } from '#/agent/permissionMode/permissionModeOps';
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import { profileKey } from '#/agent/profile/profileOps';
-import { TOWER_WORKER_PROFILE } from '#/features/tower/tower';
+import { hasPinnedPermissionMode } from '#/features/tower/tower';
 import { IAgentTaskService } from '#/agent/task/task';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { withSubagentProfile } from '#/session/agentLifecycle/subagentMetadata';
 import {
   agentContextOf,
   IAgentScopeContext,
@@ -48,6 +49,7 @@ import { seedShellStateFromParent } from '#/agent/tools/os/bash/seedShellState';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IRuntimeResolver } from '#/workspace/workspaceInstance/workspaceInstanceManager';
 import { remoteSessionDir } from '#/workspace/workspaceSsh/remoteSessionDir';
+import { bindTelemetryScope } from '#/app/telemetry/telemetryService';
 import type { AgentContext } from '#/agent/agentContext/agentContext';
 
 import { ManagedAgent } from './managedAgent';
@@ -151,6 +153,10 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     let stage = 'scope';
     let containerRef: InstantiationService | undefined;
     let createdHandle: IAgentScopeHandle | undefined;
+    const telemetryBinding = bindTelemetryScope(this.telemetry, {
+      agent_id: agentId,
+      mode: 'agent',
+    });
     try {
       const handle = createScopedChildHandle(
         this.instantiation,
@@ -159,13 +165,17 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         {
           seeds: [
             [IAgentScopeContext, scopeContext],
-            [ITelemetryService, this.telemetry.withContext({ agent_id: agentId })],
+            [ITelemetryService, telemetryBinding.telemetry],
             [IAgentRuntimeBindingSeed, {
               _serviceBrand: undefined,
               binding: { workspaceId: this.ctx.workspaceId, runtimeId: opts.runtimeId ?? 'local' },
             }],
           ],
           configureContainer: (container) => {
+            container.anchorKernelEntry(
+              () => telemetryBinding.dispose(),
+              'telemetry:agent-context',
+            );
             container.anchorKernelFinalizer(() => {
               eventBus?.deactivateAgent(agent);
             }, 'agent-event-bus-deactivate');
@@ -193,7 +203,10 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         type: agentId === 'main' ? 'main' : 'sub',
         parentAgentId: agentId === 'main' ? undefined : 'main',
         forkedFrom: opts.forkedFrom,
-        labels: opts.labels,
+        labels: withSubagentProfile(
+          opts.labels,
+          agentId === 'main' ? undefined : opts.binding?.profile,
+        ),
       });
       await this.seedShellState(agentId, opts);
       this.onDidCreateEmitter.fire(agent);
@@ -219,10 +232,13 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         try {
           await managed.handle.dispose();
         } catch { }
-      } else if (createdHandle !== undefined) {
-        try {
-          await createdHandle.dispose();
-        } catch { }
+      } else {
+        if (createdHandle !== undefined) {
+          try {
+            await createdHandle.dispose();
+          } catch { }
+        }
+        telemetryBinding.dispose();
       }
       if (!finalizerArmed) eventBus?.deactivateAgent(agent);
       if (didCreate) this.onDidCloseEmitter.fire(agent);
@@ -301,17 +317,17 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       });
     }
     const source = sourceManaged.handle;
+    const sourceData = source.accessor.get(IAgentProfileService).data();
+    const override = opts?.binding;
     const childContext = await this.create({
       agentId: opts?.agentId,
       runtimeId: source.accessor.get(IAgentRuntimeBindingService).current.runtimeId,
       forkedFrom: source.id,
-      labels: opts?.labels,
+      labels: withSubagentProfile(opts?.labels, override?.profile ?? sourceData.profileName),
     });
     const child = this.requireManaged(childContext).handle;
 
-    const sourceData = source.accessor.get(IAgentProfileService).data();
     const childProfile = child.accessor.get(IAgentProfileService);
-    const override = opts?.binding;
     if (override?.profile !== undefined) {
       await childProfile.bind({
         profile: override.profile,
@@ -352,10 +368,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     for (const managed of this.roster.values()) {
       if (managed.closing || !managed.active) continue;
       const handle = managed.handle;
-      if (
-        handle.accessor.get(IAgentStateService).get(profileKey).profileName ===
-        TOWER_WORKER_PROFILE
-      ) {
+      if (hasPinnedPermissionMode(handle.accessor.get(IAgentStateService).get(profileKey).profileName)) {
         continue;
       }
       handle.accessor.get(IAgentPermissionModeService).setMode(mode);

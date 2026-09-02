@@ -19,7 +19,6 @@ import type {
   BeforeToolExecuteEvent,
   ResolvedToolExecutionHookContext,
 } from '#/agent/toolExecutor/toolHooks';
-import { IAgentTelemetryContextService } from '#/app/telemetry/agentTelemetryContext';
 import { IEventBus } from '#/app/event/eventBus';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
@@ -58,7 +57,6 @@ export class AgentPlanService extends Service implements IAgentPlanService {
     @IHostFileSystem private readonly hostFs: IHostFileSystem,
     @IBlobStore private readonly blobs: IBlobStore,
     @IAgentReminderService reminder: IAgentReminderService,
-    @IAgentTelemetryContextService private readonly telemetryContext: IAgentTelemetryContextService,
     @IEventBus eventBus: IEventBus,
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
     @ISessionContext private readonly sessionCtx: ISessionContext,
@@ -66,7 +64,7 @@ export class AgentPlanService extends Service implements IAgentPlanService {
     @IAgentToolExecutorService toolExecutor: IAgentToolExecutorService,
     @IAgentToolApprovalService private readonly toolApproval: IAgentToolApprovalService,
     @IAgentPermissionModeService private readonly modeService: IAgentPermissionModeService,
-    @ITelemetryService telemetry: ITelemetryService,
+    @ITelemetryService private readonly telemetry: ITelemetryService,
     @IAgentStateService private readonly agentState: IAgentStateService,
     @IAgentRuntimeService runtimes?: IAgentRuntimeService,
   ) {
@@ -166,7 +164,7 @@ export class AgentPlanService extends Service implements IAgentPlanService {
   }
 
   private restoreTelemetryMode(): void {
-    this.telemetryContext.set({ mode: this.isActive ? 'plan' : 'agent' });
+    this.telemetry.setContext({ mode: this.isActive ? 'plan' : 'agent' });
   }
 
   private createPlanId(): string {
@@ -183,7 +181,7 @@ export class AgentPlanService extends Service implements IAgentPlanService {
     try {
       await this.ensurePlanDirectory(planFilePath);
       await this.dispatcher.dispatch(new PlanModeEnter({ agentId: this.agentCtx.agentId, id }));
-      this.telemetryContext.set({ mode: 'plan' });
+      this.telemetry.setContext({ mode: 'plan' });
       enterRecorded = true;
       if (createFile) {
         await this.writeEmptyPlanFile(planFilePath);
@@ -198,7 +196,7 @@ export class AgentPlanService extends Service implements IAgentPlanService {
 
   cancel(id?: string): void {
     void this.dispatcher.dispatch(new PlanModeCancel({ agentId: this.agentCtx.agentId, id }));
-    this.telemetryContext.set({ mode: 'agent' });
+    this.telemetry.setContext({ mode: 'agent' });
   }
 
   async clear(): Promise<void> {
@@ -209,7 +207,7 @@ export class AgentPlanService extends Service implements IAgentPlanService {
 
   exit(id?: string): void {
     void this.dispatcher.dispatch(new PlanModeExit({ agentId: this.agentCtx.agentId, id }));
-    this.telemetryContext.set({ mode: 'agent' });
+    this.telemetry.setContext({ mode: 'agent' });
   }
 
   async recordRevision(): Promise<void> {
