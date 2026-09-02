@@ -56,11 +56,17 @@ export class WorkspaceRootSkillSource extends Disposable implements IWorkspaceRo
         if (event.domain === MERGE_ALL_AVAILABLE_SKILLS_SECTION) this.onDidChangeEmitter.fire();
       }),
     );
-    this.watchReady = this.updateProjectSkillRootWatch([]).then(() => undefined);
+    this.watchReady =
+      this.workspace.remoteCwd === undefined
+        ? this.updateProjectSkillRootWatch([]).then(() => undefined)
+        : Promise.resolve();
   }
 
   async load(): Promise<SkillContribution> {
     await this.watchReady;
+    if (this.workspace.remoteCwd !== undefined) {
+      return { skills: [] };
+    }
     if ((this.bootstrap.args.skillDirs?.length ?? 0) > 0) {
       return { skills: [] };
     }

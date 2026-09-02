@@ -366,6 +366,44 @@ describe('WorkspaceSkillCatalogService', () => {
     host.dispose();
   });
 
+  it('skips project discovery and the fs watch on remote workspaces', async () => {
+    const discoveredRoots: string[] = [];
+    const store: ISkillDiscovery = {
+      _serviceBrand: undefined,
+      discover: async (roots) => {
+        discoveredRoots.push(...roots.map((root) => root.path));
+        return { skills: [], skipped: [], scannedRoots: [], scannedDirectories: [] };
+      },
+    };
+    const ws: IWorkspaceContext = {
+      ...workspaceContextStub('ssh://devbox.example.test/mnt/proj'),
+      source: 'ssh',
+      remoteCwd: '/mnt/proj',
+    };
+    let watchCalls = 0;
+    const host = createScopedTestHost([
+      stubPair(IFlagService, stubFlag(true)),
+      stubPair(ISkillDiscovery, store),
+      stubPair(IBootstrapService, bootstrapStub),
+      stubPair(IConfigService, configStub()),
+      stubPair(IPluginService, pluginStub()),
+      stubPair(
+        IHostFsWatchService,
+        fsWatchStub(() => {
+          watchCalls += 1;
+        }),
+      ),
+    ]);
+    const workspace = host.child('program', 'w1', [stubPair(IWorkspaceContext, ws)]);
+
+    const catalog = workspace.accessor.get(IWorkspaceSkillCatalog);
+    await catalog.load();
+
+    expect(watchCalls).toBe(0);
+    expect(discoveredRoots.some((path) => path.includes('devbox.example.test'))).toBe(false);
+    host.dispose();
+  });
+
   it('waits for config ready before loading extra skill dirs', async () => {
     let markReady!: () => void;
     let ready = false;
