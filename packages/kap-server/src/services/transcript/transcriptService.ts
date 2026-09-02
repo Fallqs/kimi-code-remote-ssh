@@ -478,6 +478,7 @@ export class TranscriptService {
     const messages = [...reduceContextTranscript(records).entries];
     const taskOriginTurnTaskIds = new Set<string>();
     const steeredContents = new Map<string, Map<string, number>>();
+    const turnPromptContents = new Map<string, Map<string, number>>();
     const anchorStack: { taskIdsSnapshot: Set<string> }[] = [];
     let anchorFloor = 0;
     let sawTurnPrompt = false;
@@ -516,6 +517,15 @@ export class TranscriptService {
       }
       if (record.type !== 'turn.prompt') continue;
       sawTurnPrompt = true;
+      const promptInput = record['input'];
+      if (Array.isArray(promptInput)) {
+        const key = JSON.stringify(promptInput);
+        const promptOrigin = (record as { origin?: { kind?: unknown } }).origin;
+        const kind = typeof promptOrigin?.kind === 'string' ? promptOrigin.kind : 'user';
+        const byKind = turnPromptContents.get(key) ?? new Map<string, number>();
+        byKind.set(kind, (byKind.get(kind) ?? 0) + 1);
+        turnPromptContents.set(key, byKind);
+      }
       const origin = (record as { origin?: { kind?: unknown; taskId?: unknown } }).origin;
       if (origin === undefined) continue;
       if (
@@ -527,7 +537,9 @@ export class TranscriptService {
     }
     const base = groupMessagesIntoSnapshot(
       messages,
-      sawTurnPrompt || steeredContents.size > 0 ? { taskOriginTurnTaskIds, steeredContents } : undefined,
+      sawTurnPrompt || steeredContents.size > 0
+        ? { taskOriginTurnTaskIds, steeredContents, turnPromptContents }
+        : undefined,
     );
     const folded = foldWireRecordFacts(projectQuestionInteractionRecords(records, sessionId), base, {
       resolvePlanRevisionKey: (key) =>

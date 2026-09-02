@@ -180,7 +180,7 @@ function deliverFire(
     origin,
   };
   const buffered = runtime.get(IAgentLoopService).status().state === 'running';
-  let launched: Promise<unknown>;
+  let launched: Promise<Turn | undefined>;
   try {
     launched = runtime.get(IAgentPromptService).inject(message);
   } catch (error) {
@@ -188,8 +188,8 @@ function deliverFire(
     return Promise.resolve(false);
   }
   return launched.then(
-    () => {
-      void runtime.dispatch(new CronFired({ origin, prompt: task.prompt }));
+    (turn) => {
+      void runtime.dispatch(new CronFired({ origin, prompt: task.prompt, turnId: buffered ? undefined : turn?.id }));
       telemetryOf(runtime).track2(CRON_FIRED, {
         recurring: task.recurring !== false,
         coalesced_count: context.coalescedCount,

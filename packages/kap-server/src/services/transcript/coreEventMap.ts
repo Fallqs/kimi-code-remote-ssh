@@ -336,7 +336,7 @@ export class AgentTranscriptProjector {
       case 'plugin_command.activated':
         return [this.markerOp('skill', { ...restOf(event), variant: 'plugin_command' })];
       case 'cron.fired':
-        return [this.markerOp('cron.fired', restOf(event))];
+        return [this.markerOp('cron.fired', restOf(event), event.turnId)];
       case 'compaction.started':
       case 'compaction.blocked':
       case 'compaction.cancelled':
@@ -1311,7 +1311,7 @@ export class AgentTranscriptProjector {
     return [{ op: 'items.remove', ids }];
   }
 
-  private markerOp(marker: string, payload: unknown): TranscriptOperation {
+  private markerOp(marker: string, payload: unknown, beforeTurn?: number): TranscriptOperation {
     this.markerSeq += 1;
     const item: TranscriptMarker = {
       kind: 'marker',
@@ -1320,7 +1320,7 @@ export class AgentTranscriptProjector {
       payload,
       at: nowIso(),
     };
-    return { op: 'marker.upsert', item };
+    return { op: 'marker.upsert', item, beforeTurn };
   }
 
   private noticeOp(

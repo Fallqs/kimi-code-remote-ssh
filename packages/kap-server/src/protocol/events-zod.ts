@@ -984,6 +984,7 @@ export const cronFiredEventSchema = z.object({
   type: z.literal('cron.fired'),
   origin: cronJobOriginSchema,
   prompt: z.string(),
+  turnId: z.number().int().optional(),
 });
 
 export const promptSubmittedEventSchema = z.object({

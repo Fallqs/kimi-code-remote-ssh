@@ -1490,6 +1490,52 @@ describe('AgentTranscriptProjector', () => {
     expect(markers[7]!.payload).toMatchObject({ start: 1, deleteCount: 2 });
   });
 
+  it('anchors the cron.fired marker before the turn it triggered', () => {
+    const projector = new AgentTranscriptProjector('main', TEST_SESSION_ID);
+    const tx = new AgentTranscript('main');
+    const ops: TranscriptOperation[] = [];
+    const feed = (event: ProjectorBusEvent): void => {
+      const mapped = projector.map(event);
+      ops.push(...mapped);
+      tx.apply(mapped);
+    };
+
+    feed(ev({ type: 'turn.started', turnId: 5, origin: { kind: 'user' } }));
+    feed(ev({ type: 'turn.step.started', turnId: 5, step: 1, stepId: 'u5' }));
+    feed(ev({ type: 'assistant.delta', turnId: 5, delta: 'earlier answer' }));
+    feed(ev({ type: 'turn.step.completed', turnId: 5, step: 1, stepId: 'u5' }));
+    feed(ev({ type: 'turn.ended', turnId: 5, reason: 'completed' }));
+
+    const cronOrigin = {
+      kind: 'cron_job',
+      jobId: 'j1',
+      cron: '* * * * *',
+      recurring: true,
+      coalescedCount: 1,
+      stale: false,
+    };
+    feed(ev({ type: 'turn.started', turnId: 6, origin: cronOrigin }));
+    feed(ev({ type: 'cron.fired', origin: cronOrigin, prompt: 'ping', turnId: 6 }));
+    feed(ev({ type: 'turn.step.started', turnId: 6, step: 1, stepId: 'u6' }));
+    feed(ev({ type: 'assistant.delta', turnId: 6, delta: 'cron answer' }));
+    feed(ev({ type: 'turn.step.completed', turnId: 6, step: 1, stepId: 'u6' }));
+    feed(ev({ type: 'turn.ended', turnId: 6, reason: 'completed' }));
+
+    expect(
+      ops.find((op) => op.op === 'marker.upsert' && op.item.kind === 'marker' && op.item.marker === 'cron.fired'),
+    ).toMatchObject({ beforeTurn: 6 });
+    const timeline = (): unknown[] =>
+      tx
+        .getItems()
+        .map((item) =>
+          item.kind === 'turn' ? item.turnId : item.kind === 'marker' ? item.marker : item.refId,
+        );
+    expect(timeline()).toEqual(['t5', 'cron.fired', 't6']);
+
+    feed(ev({ type: 'cron.fired', origin: cronOrigin, prompt: 'no turn anchor' }));
+    expect(timeline()).toEqual(['t5', 'cron.fired', 't6', 'cron.fired']);
+  });
+
   it('removes trailing turns and the undo marker on context.undone', () => {
     const tx = new AgentTranscript('main');
     const projector = new AgentTranscriptProjector('main', TEST_SESSION_ID, {

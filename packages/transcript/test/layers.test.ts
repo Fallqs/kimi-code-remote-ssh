@@ -569,6 +569,33 @@ describe('groupMessagesIntoSnapshot (cold path)', () => {
     });
   });
 
+  it('does not open turns for user messages that match no turn.prompt record', () => {
+    const snapshot = groupMessagesIntoSnapshot(
+      [
+        {
+          role: 'user',
+          content: [{ type: 'text', text: '<bash-input>ls</bash-input>' }],
+          toolCalls: [],
+          origin: { kind: 'shell_command' },
+        },
+        { role: 'user', content: [{ type: 'text', text: 'hello' }], toolCalls: [], origin: { kind: 'user' } },
+        { role: 'assistant', content: [{ type: 'text', text: 'hi' }], toolCalls: [] },
+        { role: 'user', content: [{ type: 'text', text: 'next' }], toolCalls: [], origin: { kind: 'user' } },
+        { role: 'assistant', content: [{ type: 'text', text: 'done' }], toolCalls: [] },
+      ],
+      {
+        turnPromptContents: new Map([
+          [JSON.stringify([{ type: 'text', text: 'hello' }]), new Map([['user', 1]])],
+          [JSON.stringify([{ type: 'text', text: 'next' }]), new Map([['user', 1]])],
+        ]),
+      },
+    );
+
+    const turns = snapshot.items.filter((i) => i.kind === 'turn');
+    expect(turns.map((t) => (t.kind === 'turn' ? t.turnId : undefined))).toEqual(['t0', 't1']);
+    expect(turns.map((t) => (t.kind === 'turn' ? t.prompt : undefined))).toEqual(['hello', 'next']);
+  });
+
   it('flushes a pending steer into the closing turn when a new turn opens before any reply', () => {
     const snapshot = groupMessagesIntoSnapshot(
       [

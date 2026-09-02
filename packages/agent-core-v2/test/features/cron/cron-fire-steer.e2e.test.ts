@@ -67,6 +67,9 @@ describe('cron-fired steer turn context', () => {
     await ctx.get(IAgentLoopService).settled();
 
     expect(ctx.llmCalls.length).toBe(3);
+
+    const cronFired = ctx.allEvents.find((entry) => entry.event === 'cron.fired');
+    expect(cronFired?.args).toMatchObject({ turnId: 1 });
     const fireRequest = ctx.llmCalls.at(-1)!;
 
     const lastUser = fireRequest.history.filter((m) => m.role === 'user').at(-1);

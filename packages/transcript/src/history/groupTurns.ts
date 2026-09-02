@@ -71,12 +71,16 @@ export function groupMessagesIntoSnapshot(
   options?: {
     readonly taskOriginTurnTaskIds?: ReadonlySet<string>;
     readonly steeredContents?: ReadonlyMap<string, ReadonlyMap<string, number>>;
+    readonly turnPromptContents?: ReadonlyMap<string, ReadonlyMap<string, number>>;
   },
 ): AgentTranscriptSnapshot {
   const items: TranscriptItem[] = [];
   const attachments: TranscriptAttachment[] = [];
   const steeredContents = new Map(
     [...(options?.steeredContents ?? [])].map(([key, byKind]) => [key, new Map(byKind)]),
+  );
+  const turnPromptContents = new Map(
+    [...(options?.turnPromptContents ?? [])].map(([key, byKind]) => [key, new Map(byKind)]),
   );
   let turn: TurnDraft | undefined;
   let pendingNotificationFrames: {
@@ -305,6 +309,13 @@ export function groupMessagesIntoSnapshot(
         continue;
       }
       const opening = foldTurnOpeningInput(message);
+      if (originKind === 'shell_command' && options?.turnPromptContents !== undefined) {
+        const promptKey = JSON.stringify(message.content ?? []);
+        const byKind = turnPromptContents.get(promptKey);
+        const remaining = byKind?.get('shell_command') ?? 0;
+        if (remaining <= 0) continue;
+        byKind?.set('shell_command', remaining - 1);
+      }
       startTurn(mapOrigin(message), opening.text, opening.attachmentIds, triggerPromptIdOf(message));
       continue;
     }

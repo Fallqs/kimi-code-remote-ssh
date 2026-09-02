@@ -58,6 +58,7 @@ export interface CronCursor extends CronCursorPayload {}
 export interface CronFiredPayload {
   readonly origin: CronJobOrigin;
   readonly prompt: string;
+  readonly turnId?: number;
 }
 
 export class CronFired extends Event2<CronFiredPayload> {
