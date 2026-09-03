@@ -471,6 +471,91 @@ describe('groupMessagesIntoSnapshot (cold path)', () => {
     expect(marker?.kind === 'marker' && marker.marker).toBe('compaction');
   });
 
+  it('places a mid-turn compaction marker before the turn it interrupted', () => {
+    const snapshot = groupMessagesIntoSnapshot([
+      { role: 'user', content: [{ type: 'text', text: 'build it' }], toolCalls: [], origin: { kind: 'user' } },
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'step one' }],
+        toolCalls: [{ id: 'c1', name: 'Bash', arguments: '{"command":"ls"}' }],
+      },
+      { role: 'tool', content: [{ type: 'text', text: 'ok' }], toolCallId: 'c1', toolCalls: [] },
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'summary so far' }],
+        toolCalls: [],
+        origin: { kind: 'compaction_summary' },
+      },
+      {
+        role: 'system',
+        content: [{ type: 'text', text: 'continue' }],
+        toolCalls: [],
+        origin: { kind: 'injection', variant: 'compaction_continue' } as { kind: string },
+      },
+      {
+        role: 'assistant',
+        content: [{ type: 'think', think: 'reasoning' }, { type: 'text', text: 'step two' }],
+        toolCalls: [],
+      },
+    ]);
+
+    expect(snapshot.items.map((item) => item.kind)).toEqual(['marker', 'turn']);
+    const marker = snapshot.items[0];
+    expect(marker?.kind === 'marker' && marker.marker).toBe('compaction');
+    const turn = snapshot.items[1];
+    if (turn?.kind !== 'turn') throw new Error('expected turn');
+    expect(turn.steps).toHaveLength(2);
+  });
+
+  it('keeps a mid-turn compaction marker ahead of the turn across injections and task notifications', () => {
+    const snapshot = groupMessagesIntoSnapshot(
+      [
+        { role: 'user', content: [{ type: 'text', text: 'build it' }], toolCalls: [], origin: { kind: 'user' } },
+        { role: 'assistant', content: [{ type: 'text', text: 'step one' }], toolCalls: [] },
+        {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'summary so far' }],
+          toolCalls: [],
+          origin: { kind: 'compaction_summary' },
+        },
+        {
+          role: 'user',
+          content: [{ type: 'text', text: 'reminder' }],
+          toolCalls: [],
+          origin: { kind: 'injection', variant: 'reminder' } as { kind: string },
+        },
+        {
+          role: 'user',
+          content: [{ type: 'text', text: '<notification>task done</notification>' }],
+          toolCalls: [],
+          origin: { kind: 'task', taskId: 'task-1' } as { kind: string },
+        },
+        { role: 'assistant', content: [{ type: 'text', text: 'step two' }], toolCalls: [] },
+      ],
+      { taskOriginTurnTaskIds: new Set() },
+    );
+
+    expect(snapshot.items.map((item) => item.kind)).toEqual(['marker', 'turn']);
+    const turn = snapshot.items[1];
+    if (turn?.kind !== 'turn') throw new Error('expected turn');
+    expect(turn.steps).toHaveLength(2);
+  });
+
+  it('keeps an end-of-history compaction marker after the last turn', () => {
+    const snapshot = groupMessagesIntoSnapshot([
+      { role: 'user', content: [{ type: 'text', text: 'build it' }], toolCalls: [], origin: { kind: 'user' } },
+      { role: 'assistant', content: [{ type: 'text', text: 'done' }], toolCalls: [] },
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'summary so far' }],
+        toolCalls: [],
+        origin: { kind: 'compaction_summary' },
+      },
+    ]);
+
+    expect(snapshot.items.map((item) => item.kind)).toEqual(['turn', 'marker']);
+  });
+
   it('folds task-notification user messages into the current turn instead of opening their own', () => {
     const snapshot = groupMessagesIntoSnapshot(
       [

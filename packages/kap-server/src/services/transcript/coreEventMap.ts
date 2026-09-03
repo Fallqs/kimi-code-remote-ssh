@@ -342,10 +342,14 @@ export class AgentTranscriptProjector {
       case 'compaction.cancelled':
       case 'compaction.completed':
         return [
-          this.markerOp('compaction', {
-            phase: event.type.slice('compaction.'.length),
-            ...restOf(event),
-          }),
+          this.markerOp(
+            'compaction',
+            {
+              phase: event.type.slice('compaction.'.length),
+              ...restOf(event),
+            },
+            this.currentTurn?.state === 'running' ? this.currentTurn.ordinal : undefined,
+          ),
         ];
       case 'context.spliced':
         return [this.markerOp('undo', restOf(event))];

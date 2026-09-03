@@ -1536,6 +1536,45 @@ describe('AgentTranscriptProjector', () => {
     expect(timeline()).toEqual(['t5', 'cron.fired', 't6', 'cron.fired']);
   });
 
+  it('anchors compaction markers before the running turn so later frames stay below the divider', () => {
+    const projector = new AgentTranscriptProjector('main', TEST_SESSION_ID);
+    const tx = new AgentTranscript('main');
+    const ops: TranscriptOperation[] = [];
+    const feed = (event: ProjectorBusEvent): void => {
+      const mapped = projector.map(event);
+      ops.push(...mapped);
+      tx.apply(mapped);
+    };
+    const timeline = (): unknown[] =>
+      tx
+        .getItems()
+        .map((item) =>
+          item.kind === 'turn' ? item.turnId : item.kind === 'marker' ? item.marker : item.refId,
+        );
+
+    feed(ev({ type: 'turn.started', turnId: 5, origin: { kind: 'user' }, prompt: 'build it' }));
+    feed(ev({ type: 'turn.step.started', turnId: 5, step: 1, stepId: 'u5' }));
+    feed(ev({ type: 'assistant.delta', turnId: 5, delta: 'pre-compaction' }));
+    feed(ev({ type: 'turn.step.completed', turnId: 5, step: 1, stepId: 'u5' }));
+    feed(ev({ type: 'compaction.started', trigger: 'auto' }));
+    feed(ev({ type: 'compaction.completed', result: { kept: 3 } }));
+    feed(ev({ type: 'turn.step.started', turnId: 5, step: 2, stepId: 'u5' }));
+    feed(ev({ type: 'assistant.delta', turnId: 5, delta: 'post-compaction' }));
+    feed(ev({ type: 'turn.step.completed', turnId: 5, step: 2, stepId: 'u5' }));
+    feed(ev({ type: 'turn.ended', turnId: 5, reason: 'completed' }));
+
+    expect(
+      ops.filter((op) => op.op === 'marker.upsert'),
+    ).toEqual([
+      expect.objectContaining({ beforeTurn: 5 }),
+      expect.objectContaining({ beforeTurn: 5 }),
+    ]);
+    expect(timeline()).toEqual(['compaction', 'compaction', 't5']);
+
+    feed(ev({ type: 'compaction.started', trigger: 'manual' }));
+    expect(timeline()).toEqual(['compaction', 'compaction', 't5', 'compaction']);
+  });
+
   it('removes trailing turns and the undo marker on context.undone', () => {
     const tx = new AgentTranscript('main');
     const projector = new AgentTranscriptProjector('main', TEST_SESSION_ID, {

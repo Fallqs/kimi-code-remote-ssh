@@ -219,8 +219,20 @@ export function groupMessagesIntoSnapshot(
     items.push(item);
   };
 
+  const insertMarkerBeforeTurn = (marker: string, payload: unknown, target: TurnDraft): void => {
+    markerCount += 1;
+    const item: TranscriptMarker = { kind: 'marker', markerId: `m${markerCount}`, marker, payload };
+    const at = items.findIndex((entry) => entry.kind === 'turn' && entry.turnId === target.turnId);
+    if (at === -1) {
+      items.push(item);
+      return;
+    }
+    items.splice(at, 0, item);
+  };
+
   let prevNonTaskRole: string | undefined;
-  for (const message of messages) {
+  for (let messageIndex = 0; messageIndex < messages.length; messageIndex += 1) {
+    const message = messages[messageIndex]!;
     const originKind = message.origin?.kind;
     if (message.role === 'system' && originKind !== 'compaction_summary') continue;
     const isTaskOrigin =
@@ -241,7 +253,16 @@ export function groupMessagesIntoSnapshot(
       }
       const markerKey = originKind !== undefined ? MARKER_USER_ORIGINS[originKind] : undefined;
       if (markerKey !== undefined && !isUserSlashPrompt(message)) {
-        pushMarker(markerKey, { text: textOf(message), origin: message.origin });
+        const payload = { text: textOf(message), origin: message.origin };
+        if (
+          markerKey === 'compaction' &&
+          turn !== undefined &&
+          turnContinuesAfter(messages, messageIndex, prevNonTaskRole, options?.taskOriginTurnTaskIds)
+        ) {
+          insertMarkerBeforeTurn(markerKey, payload, turn);
+        } else {
+          pushMarker(markerKey, payload);
+        }
         continue;
       }
       const contentKey = JSON.stringify(message.content ?? []);
@@ -426,6 +447,42 @@ function opensOwnTurn(message: HistoryMessage): boolean {
     typeof origin.name === 'string' &&
     TURN_OPENING_SYSTEM_TRIGGERS.has(origin.name)
   );
+}
+
+function turnContinuesAfter(
+  messages: readonly HistoryMessage[],
+  from: number,
+  prevNonTaskRole: string | undefined,
+  taskOriginTurnTaskIds: ReadonlySet<string> | undefined,
+): boolean {
+  let prevRole = prevNonTaskRole;
+  for (let i = from + 1; i < messages.length; i += 1) {
+    const message = messages[i]!;
+    const originKind = message.origin?.kind;
+    if (message.role === 'system' && originKind !== 'compaction_summary') continue;
+    if (originKind === 'compaction_summary') continue;
+    if (message.role === 'assistant' || message.role === 'tool') return true;
+    if (message.role !== 'user') return false;
+    const isTaskOrigin =
+      originKind === 'task' || originKind === 'background_task' || originKind === 'task_notification';
+    if (!isTaskOrigin) prevRole = message.role;
+    if (originKind !== undefined && HIDDEN_USER_ORIGINS.has(originKind) && !opensOwnTurn(message)) {
+      continue;
+    }
+    if (isTaskOrigin) {
+      const origin = message.origin as { taskId?: unknown } | undefined;
+      const taskId = typeof origin?.taskId === 'string' ? origin.taskId : undefined;
+      const opensOwn =
+        taskOriginTurnTaskIds === undefined
+          ? prevRole !== 'assistant' && prevRole !== 'tool'
+          : taskId === undefined ||
+            taskOriginTurnTaskIds.has(taskId) ||
+            originKind === 'background_task';
+      if (!opensOwn) continue;
+    }
+    return false;
+  }
+  return false;
 }
 
 function isUserSlashPrompt(message: HistoryMessage): boolean {
