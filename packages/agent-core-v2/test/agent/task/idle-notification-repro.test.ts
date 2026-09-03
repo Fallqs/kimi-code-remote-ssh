@@ -91,6 +91,33 @@ describe('task notification → main agent (real Agent instance)', () => {
       expect(flatHistoryText).not.toContain('background agent finished its job');
     });
 
+    it('IDLE: the notification-launched turn carries the notification as its turn.started prompt', async () => {
+      ctx.mockNextResponse({ type: 'text', text: 'ack from main agent' });
+      const turnEnd = ctx.untilTurnEnd();
+      const taskId = background.registerTask(agentTask(
+        Promise.resolve({ result: 'background agent finished its job' }),
+        'prompt-carrying repro',
+      ));
+      await background.wait(taskId);
+
+      await vi.waitFor(
+        () => {
+          expect(notifiedCount(ctx)).toBe(1);
+        },
+        { timeout: 2000 },
+      );
+      await turnEnd;
+
+      const started = ctx.allEvents.find((e) => e.event === 'turn.started');
+      const args = started?.args as {
+        origin?: { kind?: string; taskId?: string };
+        prompt?: string;
+      };
+      expect(args?.origin).toMatchObject({ kind: 'task', taskId });
+      expect(args?.prompt).toContain('<notification');
+      expect(args?.prompt).toContain('prompt-carrying repro completed.');
+    });
+
     it('BUSY: completed bg agent during an active turn is flushed into an LLM call', async () => {
       ctx.mockNextResponse({ type: 'text', text: 'first turn ack' });
       ctx.mockNextResponse({ type: 'text', text: 'notification ack' });

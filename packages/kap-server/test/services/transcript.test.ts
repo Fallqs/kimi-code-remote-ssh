@@ -1575,6 +1575,41 @@ describe('AgentTranscriptProjector', () => {
     expect(timeline()).toEqual(['compaction', 'compaction', 't5', 'compaction']);
   });
 
+  it('keeps an idle manual compaction above the next turn’s prompt', () => {
+    const projector = new AgentTranscriptProjector('main', TEST_SESSION_ID);
+    const tx = new AgentTranscript('main');
+    const ops: TranscriptOperation[] = [];
+    const feed = (event: ProjectorBusEvent): void => {
+      const mapped = projector.map(event);
+      ops.push(...mapped);
+      tx.apply(mapped);
+    };
+    const timeline = (): unknown[] =>
+      tx
+        .getItems()
+        .map((item) =>
+          item.kind === 'turn' ? item.turnId : item.kind === 'marker' ? item.marker : item.refId,
+        );
+
+    feed(ev({ type: 'turn.started', turnId: 0, origin: { kind: 'user' }, prompt: 'first task' }));
+    feed(ev({ type: 'turn.step.started', turnId: 0, step: 1, stepId: 'u0' }));
+    feed(ev({ type: 'assistant.delta', turnId: 0, delta: 'done' }));
+    feed(ev({ type: 'turn.step.completed', turnId: 0, step: 1, stepId: 'u0' }));
+    feed(ev({ type: 'turn.ended', turnId: 0, reason: 'completed' }));
+    feed(ev({ type: 'compaction.started', trigger: 'manual' }));
+    feed(ev({ type: 'compaction.completed', result: { kept: 3 } }));
+    feed(ev({ type: 'prompt.accepted', promptId: 'msg_2', content: [{ type: 'text', text: 'next question' }] }));
+    feed(ev({ type: 'turn.started', turnId: 1, origin: { kind: 'user' }, prompt: 'next question' }));
+    feed(ev({ type: 'turn.step.started', turnId: 1, step: 1, stepId: 'u1' }));
+    feed(ev({ type: 'thinking.delta', turnId: 1, delta: 'thinking' }));
+
+    expect(ops.filter((op) => op.op === 'marker.upsert')).toEqual([
+      expect.objectContaining({ beforeTurn: undefined }),
+      expect.objectContaining({ beforeTurn: undefined }),
+    ]);
+    expect(timeline()).toEqual(['t0', 'compaction', 'compaction', 't1']);
+  });
+
   it('removes trailing turns and the undo marker on context.undone', () => {
     const tx = new AgentTranscript('main');
     const projector = new AgentTranscriptProjector('main', TEST_SESSION_ID, {
@@ -1811,7 +1846,14 @@ describe('AgentTranscriptProjector', () => {
     const tx = new AgentTranscript('main');
     const feed = (event: ProjectorBusEvent): void => void tx.apply(projector.map(event));
 
-    feed(ev({ type: 'turn.started', turnId: 1, origin: { kind: 'task', taskId: 'task_1' } }));
+    feed(
+      ev({
+        type: 'turn.started',
+        turnId: 1,
+        origin: { kind: 'task', taskId: 'task_1' },
+        prompt: '<notification id="task:task_1:completed">Background agent completed</notification>',
+      }),
+    );
     feed(
       ev({
         type: 'task.notified',
@@ -1824,6 +1866,9 @@ describe('AgentTranscriptProjector', () => {
       }),
     );
     feed(ev({ type: 'turn.step.started', turnId: 1, step: 1 }));
+    expect(turnOps('t1', tx.getItems()).prompt).toBe(
+      '<notification id="task:task_1:completed">Background agent completed</notification>',
+    );
     expect(turnOps('t1', tx.getItems()).steps[0]!.frames).toHaveLength(0);
   });
 
