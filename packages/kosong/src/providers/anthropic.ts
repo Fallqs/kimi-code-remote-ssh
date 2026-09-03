@@ -1006,10 +1006,12 @@ export class AnthropicChatProvider implements ChatProvider {
     // 400 ("roles must alternate"), and api.anthropic.com concatenates them
     // anyway — so merging is safe for native Anthropic and required for strict
     // backends. Consecutive plain-text user messages arise naturally after
-    // compaction (kept user prompts + user-role summary + injected reminders)
-    // and from back-to-back system messages converted to user role above; a
-    // tool-result user turn followed by a text turn arises from steering after
-    // a tool result. The shared helper applies the asymmetric merge rule (see
+    // compaction (the kept user prompts plus injected reminders; the summary
+    // itself is assistant-role) and from back-to-back system messages
+    // converted to user role above (e.g. the post-compaction continue
+    // reminder); a tool-result user turn followed by a text turn arises from
+    // steering after a tool result. The shared helper applies the asymmetric
+    // merge rule (see
     // mergeConsecutiveUserMessages) so this provider and Gemini/Vertex stay in
     // step.
     const messages = mergeConsecutiveUserMessages(

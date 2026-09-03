@@ -327,16 +327,20 @@ function mergeConsecutiveAssistantMessages(
   return out;
 }
 
-// Drop leading messages until the first one is a user turn. Strict providers
-// require the first message to be `user`; a history that starts with an
-// assistant or tool message (after dropping/compaction edge cases) is rejected.
-// Strict-resend only.
+// Drop leading assistant/tool messages until the first one is a user or system
+// turn. Strict providers require the first wire message to be `user` and
+// convert a leading system message into a tagged `<system>` user turn at the
+// provider boundary, so only assistant/tool leads (a dropping/compaction edge
+// case) are unrepresentable and dropped. Strict-resend only.
 function dropLeadingNonUserMessages(
   messages: readonly Message[],
   onAnomaly?: (anomaly: ProjectionAnomaly) => void,
 ): Message[] {
   let start = 0;
-  while (start < messages.length && messages[start]!.role !== 'user') {
+  while (
+    start < messages.length &&
+    (messages[start]!.role === 'assistant' || messages[start]!.role === 'tool')
+  ) {
     onAnomaly?.({ kind: 'leading_non_user_dropped', role: messages[start]!.role });
     start += 1;
   }

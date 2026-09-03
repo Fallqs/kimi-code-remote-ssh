@@ -7,7 +7,7 @@ import type { SlashCommandHost } from './dispatch';
  * Visible text of the last assistant transcript entry, newest first; empty
  * string when none. Sourced from the rendered transcript rather than the
  * model context so it survives compaction and session resume: after
- * `/compact` the context keeps user messages plus a user-role summary only,
+ * `/compact` the context keeps user messages plus a compaction summary only,
  * while the last reply is still on screen. Only entries tagged `modelText`
  * count — hook-result and goal-completion cards share kind 'assistant' but
  * are not replies.

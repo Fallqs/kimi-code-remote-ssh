@@ -1,5 +1,7 @@
 import {
   COMPACT_USER_MESSAGE_MAX_TOKENS,
+  COMPACTION_CONTINUE_TEXT,
+  COMPACTION_CONTINUE_VARIANT,
   COMPACTION_ELISION_VARIANT,
   buildCompactionElisionText,
   collectCompactableUserMessages,
@@ -279,12 +281,23 @@ export function projectContext(
               ? contextMessageText(rawSummary)
               : (contextSummary ?? '');
         const compactedCount = rec.compactedCount ?? ('count' in rec ? rec.count : 0);
+        // Mirror the engine's summary-role rule: the summary only keeps the
+        // assistant role when kept user messages precede it; when it would
+        // lead the rebuilt history (legacy-tail records, or a zero-kept
+        // selection) it drops to system so strict providers still accept the
+        // first turn.
+        const summaryRole =
+          rec.legacyTail === true ||
+          rec.keptUserMessageCount === undefined ||
+          rec.keptUserMessageCount === 0
+            ? 'system'
+            : 'assistant';
         const summaryBubble: ProjectedMessage = {
           lineNo: entry.lineNo,
           time: rec.time,
           source: 'compaction_summary',
           message: {
-            role: 'user',
+            role: summaryRole,
             content: [{ type: 'text', text: summaryText }],
             toolCalls: [],
             origin: { kind: 'compaction_summary' },
@@ -306,6 +319,22 @@ export function projectContext(
                   content: [{ type: 'text', text: contextSummary }],
                 } as ContextMessage,
               };
+        // Mirror the engine's continue-reminder: every compaction appends a
+        // system-role reminder right after the summary so the summary never
+        // sits at the history tail. Fractional lineNo keeps the React key
+        // unique, like the elision marker.
+        const reminderBubble: ProjectedMessage = {
+          lineNo: entry.lineNo + 0.5,
+          time: rec.time,
+          source: 'append_message',
+          message: {
+            role: 'system',
+            content: [{ type: 'text', text: COMPACTION_CONTINUE_TEXT }],
+            toolCalls: [],
+            origin: { kind: 'injection', variant: COMPACTION_CONTINUE_VARIANT },
+          } as ContextMessage,
+          toolStepUuids: [],
+        };
         if (mode === 'model') {
           // Rebuild the model's-eye view. New records carry `keptUserMessageCount`
           // and use the kept-user selection below; legacy-tail records fall back
@@ -322,7 +351,7 @@ export function projectContext(
             // selection. Mirror that exact shape so opening an older compacted
             // session in model mode shows the same tail the resumed agent still
             // holds, instead of hiding it behind the new selection.
-            messages = [modelSummaryBubble, ...historyEntries.slice(compactedCount)];
+            messages = [modelSummaryBubble, ...historyEntries.slice(compactedCount), reminderBubble];
           } else if (rec.keptHeadUserMessageCount === undefined) {
             // Tail-only record: written before the head/tail split, or by new
             // code whose user pool fit the budget (the two selections agree in
@@ -346,7 +375,7 @@ export function projectContext(
               const original = realUserEntries[suffixStart + i]!;
               return original.message === message ? original : { ...original, message };
             });
-            messages = [...keptEntries, modelSummaryBubble];
+            messages = [...keptEntries, modelSummaryBubble, reminderBubble];
           } else {
             // Head/tail record: mirror `selectCompactionUserMessages` and the
             // elision marker `ContextMemory.applyCompaction` inserts between the
@@ -389,12 +418,12 @@ export function projectContext(
               } as ContextMessage,
               toolStepUuids: [],
             };
-            messages = [...headEntries, markerBubble, ...tailEntries, modelSummaryBubble];
+            messages = [...headEntries, markerBubble, ...tailEntries, modelSummaryBubble, reminderBubble];
           }
         } else {
           // Full history: keep ALL preceding messages, just append the summary
           // marker inline so the compacted prefix stays visible.
-          messages.push(summaryBubble);
+          messages.push(summaryBubble, reminderBubble);
         }
         // Mirror the engine's applyCompaction() → legacy micro-compaction
         // cutoff reset (→ 0): the message list is rebuilt, so the old

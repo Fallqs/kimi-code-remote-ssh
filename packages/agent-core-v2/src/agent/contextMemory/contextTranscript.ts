@@ -4,6 +4,7 @@ import type { WireRecord } from '#/wire/record';
 import {
   COMPACT_USER_MESSAGE_MAX_TOKENS,
   collectCompactableUserMessages,
+  createCompactionContinueMessage,
   selectRecentUserMessages,
 } from './compactionHandoff';
 import { isPromptOwnedInjection, isUndoAnchor } from './conversationTime';
@@ -125,18 +126,23 @@ export function createContextTranscriptReducer(): ContextTranscriptReducer {
         break;
       }
       case 'context.apply_compaction': {
-        if (readNumber(record, 'keptUserMessageCount') !== undefined) {
+        const keptCount = readNumber(record, 'keptUserMessageCount');
+        if (keptCount !== undefined) {
           fold.settle(record.time);
         } else {
           resetOpenState();
         }
         transcript.push({
           message: {
-            role: 'user',
+            role: keptCount !== undefined && keptCount > 0 ? 'assistant' : 'system',
             content: [{ type: 'text', text: readCompactionSummaryText(record) }],
             toolCalls: [],
             origin: { kind: 'compaction_summary' },
           },
+          time: record.time,
+        });
+        transcript.push({
+          message: createCompactionContinueMessage(),
           time: record.time,
         });
         foldedLength = recoverFoldedLength(record, transcript, clearFloor, foldedLength);
@@ -190,16 +196,16 @@ function recoverFoldedLength(
   const keptHeadUserMessageCount = readNumber(record, 'keptHeadUserMessageCount');
   const compactedCount = readNumber(record, 'compactedCount');
   if (keptUserMessageCount !== undefined) {
-    return keptUserMessageCount + (keptHeadUserMessageCount === undefined ? 1 : 2);
+    return keptUserMessageCount + (keptHeadUserMessageCount === undefined ? 2 : 3);
   }
   if (compactedCount !== undefined && compactedCount < foldedLength) {
-    return 1 + (foldedLength - compactedCount);
+    return 2 + (foldedLength - compactedCount);
   }
   const keptUserMessages = selectRecentUserMessages(
     collectCompactableUserMessages(transcript.slice(clearFloor).map((e) => e.message)),
     COMPACT_USER_MESSAGE_MAX_TOKENS,
   );
-  return keptUserMessages.length + 1;
+  return keptUserMessages.length + 2;
 }
 
 function readCompactionSummaryText(record: WireRecord): string {

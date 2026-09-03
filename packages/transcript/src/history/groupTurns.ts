@@ -221,14 +221,14 @@ export function groupMessagesIntoSnapshot(
 
   let prevNonTaskRole: string | undefined;
   for (const message of messages) {
-    if (message.role === 'system') continue;
     const originKind = message.origin?.kind;
+    if (message.role === 'system' && originKind !== 'compaction_summary') continue;
     const isTaskOrigin =
       originKind === 'task' || originKind === 'background_task' || originKind === 'task_notification';
     const prevRoleAtEntry = prevNonTaskRole;
-    if (!isTaskOrigin) prevNonTaskRole = message.role;
+    if (!isTaskOrigin && originKind !== 'compaction_summary') prevNonTaskRole = message.role;
 
-    if (message.role === 'user') {
+    if (message.role === 'user' || originKind === 'compaction_summary') {
       if (originKind !== undefined && HIDDEN_USER_ORIGINS.has(originKind)) {
         if (opensOwnTurn(message)) {
           const opening =

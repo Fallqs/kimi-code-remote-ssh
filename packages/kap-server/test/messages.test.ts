@@ -305,8 +305,11 @@ describe('server-v2 /api/v1/sessions/{sid}/messages', () => {
     await agent.accessor.get(IWireService).flush();
 
     const livePage = await getJson<PageWire>(`/api/v1/sessions/${id}/messages?page_size=100`);
-    expect(livePage.body.data.items).toHaveLength(4);
-    const liveSummaryId = livePage.body.data.items[0]!.id;
+    expect(livePage.body.data.items).toHaveLength(5);
+    const isCompactionSummary = (m: MessageWire): boolean =>
+      (m.metadata?.['origin'] as { kind?: string } | undefined)?.kind === 'compaction_summary';
+    const liveSummary = livePage.body.data.items.find(isCompactionSummary);
+    if (liveSummary === undefined) throw new Error('expected compaction summary message');
 
     await server!.close();
     server = undefined;
@@ -314,15 +317,19 @@ describe('server-v2 /api/v1/sessions/{sid}/messages', () => {
 
     const { body } = await getJson<PageWire>(`/api/v1/sessions/${id}/messages?page_size=100`);
     expect(body.code).toBe(0);
-    expect(body.data.items).toHaveLength(4);
+    expect(body.data.items).toHaveLength(5);
     expect(body.data.items.every((m) => MSG_ID.test(m.id))).toBe(true);
 
-    const [summary, _m2, maybeM1] = body.data.items;
-    if (maybeM1 === undefined) throw new Error('expected m1 message');
+    const summary = body.data.items.find(isCompactionSummary);
+    const maybeM1 = body.data.items.find((m) =>
+      m.content.some((p) => p.type === 'text' && p['text'] === 'm1'),
+    );
+    if (summary === undefined || maybeM1 === undefined)
+      throw new Error('expected summary and m1 messages');
     const m1 = maybeM1;
-    expect(summary!.id).toBe(liveSummaryId);
+    expect(summary.id).toBe(liveSummary.id);
     expect(summary).toMatchObject({
-      role: 'user',
+      role: 'assistant',
       metadata: { origin: { kind: 'compaction_summary' } },
     });
 

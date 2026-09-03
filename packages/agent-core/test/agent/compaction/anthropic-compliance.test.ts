@@ -143,7 +143,7 @@ describe('compaction — Anthropic wire compliance', () => {
     expect(wire.some((m) => m.content.some((b) => b.type === 'tool_result'))).toBe(true);
   });
 
-  it('collapses mixed-origin kept users and the summary into a single Anthropic user turn', async () => {
+  it('collapses mixed-origin kept users into one Anthropic user turn ahead of the assistant-role summary', async () => {
     const ctx = testAgent();
     ctx.configure({ provider: PROVIDER, modelCapabilities: CAPS });
     // Genuine user input the projector merges, plus a user-slash skill activation
@@ -162,15 +162,19 @@ describe('compaction — Anthropic wire compliance', () => {
       tokensBefore: 100,
     });
 
-    // Projected output still has consecutive user messages (skill + summary are
-    // not merged by the projector); only the Anthropic merge collapses them.
+    // Projected output still has consecutive user messages (the skill activation
+    // is not merged by the projector); only the Anthropic merge collapses them.
     const projected = ctx.agent.context.messages;
     expect(projected.filter((m) => m.role === 'user').length).toBeGreaterThan(1);
 
+    // Wire shape: [merged kept users] -> user, [summary] -> assistant, and the
+    // system-role continue reminder -> a trailing <system>-wrapped user turn.
     const wire = await toAnthropicWire(projected);
     assertValidAnthropic(wire);
-    expect(wire).toHaveLength(1);
+    expect(wire).toHaveLength(3);
     expect(wire[0]!.role).toBe('user');
+    expect(wire[1]!.role).toBe('assistant');
+    expect(wire[2]!.role).toBe('user');
   });
 
   it('keeps the request valid across repeated compactions', async () => {

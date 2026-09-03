@@ -16,7 +16,7 @@ import type { ContentPart, Message } from '@moonshot-ai/kosong';
 import { describe, expect, it } from 'vitest';
 
 import type { AgentOptions, AgentRecord } from '../../../src/agent';
-import { COMPACTION_ELISION_VARIANT, COMPACTION_SUMMARY_PREFIX } from '../../../src/agent/compaction';
+import { COMPACTION_CONTINUE_TEXT, COMPACTION_ELISION_VARIANT, COMPACTION_SUMMARY_PREFIX } from '../../../src/agent/compaction';
 import {
   AGENT_WIRE_PROTOCOL_VERSION,
   InMemoryAgentRecordPersistence,
@@ -487,8 +487,9 @@ describe('compaction — head/tail user-message retention', () => {
 
     const history = ctx.agent.context.history;
     const texts = historyTexts(ctx);
-    // [FIRST, head slice of MIDDLE, marker, tail slice of MIDDLE, LAST, summary]
-    expect(history).toHaveLength(6);
+    // [FIRST, head slice of MIDDLE, marker, tail slice of MIDDLE, LAST, summary,
+    // reminder]
+    expect(history).toHaveLength(7);
     expect(texts[0]).toBe(FIRST);
     expect(/^b+$/.test(texts[1]!)).toBe(true);
     expect(MIDDLE.startsWith(texts[1]!)).toBe(true);
@@ -499,6 +500,10 @@ describe('compaction — head/tail user-message retention', () => {
     expect(MIDDLE.endsWith(texts[3]!)).toBe(true);
     expect(texts[4]).toBe(LAST);
     expect(history[5]!.origin?.kind).toBe('compaction_summary');
+    expect(history[5]!.role).toBe('assistant');
+    expect(history[6]!.origin).toEqual({ kind: 'injection', variant: 'compaction_continue' });
+    expect(history[6]!.role).toBe('system');
+    expect(texts[6]).toBe(COMPACTION_CONTINUE_TEXT);
 
     const completedEvent = ctx.allEvents.find((entry) => entry.event === 'compaction.completed');
     expect(completedEvent?.args).toEqual({
@@ -594,8 +599,9 @@ describe('compaction — head/tail user-message retention', () => {
 
     const history = ctx.agent.context.history;
     const texts = historyTexts(ctx);
-    // Old tail-only shape: [truncated big message, recent question, summary].
-    expect(history).toHaveLength(3);
+    // Old tail-only shape plus the continue reminder: [truncated big message,
+    // recent question, summary, reminder].
+    expect(history).toHaveLength(4);
     expect(
       history.some(
         (message) =>
@@ -607,6 +613,7 @@ describe('compaction — head/tail user-message retention', () => {
     expect(texts[0]!.length).toBeGreaterThan(0);
     expect(big.startsWith(texts[0]!)).toBe(true);
     expect(texts[1]).toBe('recent question');
-    expect(history.at(-1)!.origin?.kind).toBe('compaction_summary');
+    expect(history.at(-2)!.origin?.kind).toBe('compaction_summary');
+    expect(history.at(-1)!.origin).toEqual({ kind: 'injection', variant: 'compaction_continue' });
   });
 });

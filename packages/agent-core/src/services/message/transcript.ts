@@ -6,15 +6,16 @@
  * `[...keptUserMessages, compaction_summary]` (the kept real user prompts —
  * oldest head plus most recent tail, verbatim within a token budget, with an
  * elision marker between the segments when the pool overflowed — followed by
- * a single user-role summary), so `getContext().history` only reflects the
+ * an assistant-role summary and a system-role continue reminder), so
+ * `getContext().history` only reflects the
  * model's CURRENT context. The wire log, however, keeps every record. The TUI
  * shows the full transcript on resume because `ReplayBuilder` captures every
  * `pushHistory` during record replay and is never folded by compaction. This
  * module reproduces that exact view for daemon REST consumers (web), without
  * touching agent-core: it re-reduces the `context.*` records with the same
  * semantics as `ContextMemory` restore, except that `context.apply_compaction`
- * INSERTS the summary message in place instead of dropping the compacted
- * prefix.
+ * INSERTS the summary and reminder messages in place instead of dropping the
+ * compacted prefix.
  *
  * Mirrored agent-core semantics (packages/agent-core/src/agent/context/index.ts):
  *   - `context.append_message`      → append (deferred while a tool exchange is open)
@@ -24,8 +25,9 @@
  *                                     structured isError/note fields, exactly like
  *                                     `ContextMemory` history
  *   - `context.apply_compaction`    → keep the full history, append the
- *                                     user-role summary marker (origin
- *                                     `compaction_summary`), and recover
+ *                                     assistant-role summary marker (origin
+ *                                     `compaction_summary`) plus the system-role
+ *                                     continue reminder, and recover
  *                                     `foldedLength` from the recorded
  *                                     kept-count fields
  *   - `context.undo`                → remove tail messages exactly like
@@ -55,6 +57,7 @@ import type { ExecutableToolResult, LoopRecordedEvent } from '../../loop';
 import {
   COMPACT_USER_MESSAGE_MAX_TOKENS,
   collectCompactableUserMessages,
+  createCompactionContinueMessage,
   isRealUserInput,
   selectRecentUserMessages,
 } from '../../agent/compaction';
@@ -245,16 +248,39 @@ export function reduceWireRecords(records: Iterable<AgentRecord>): {
       case 'context.apply_compaction': {
         // Mirrors ContextMemory.applyCompaction: the live context becomes the
         // kept user messages (head + tail, possibly separated by an elision
-        // marker) followed by a user-role summary. The transcript keeps the
-        // full history and appends the summary marker; foldedLength tracks the
-        // post-compaction live context length.
+        // marker) followed by an assistant-role summary and a system-role
+        // continue reminder. The transcript keeps the full history and appends
+        // both marker messages; foldedLength tracks the post-compaction live
+        // context length.
+        // Match the live ContextMemory role choice: the summary speaks with
+        // the assistant's voice when kept user messages lead the rebuilt
+        // context, and stays system-role when it would lead itself (legacy
+        // restores, or the degenerate zero-kept case), because strict
+        // providers reject a non-user first turn.
+        let fallbackKeptCount: number | undefined;
+        if (record.keptUserMessageCount === undefined && record.compactedCount >= foldedLength) {
+          fallbackKeptCount = selectRecentUserMessages(
+            collectCompactableUserMessages(
+              transcript.slice(clearFloor).map((entry) => entry.message),
+            ),
+            COMPACT_USER_MESSAGE_MAX_TOKENS,
+          ).length;
+        }
+        const summaryLeads =
+          record.keptUserMessageCount !== undefined
+            ? record.keptUserMessageCount === 0
+            : record.compactedCount < foldedLength || fallbackKeptCount === 0;
         transcript.push({
           message: {
-            role: 'user',
+            role: summaryLeads ? 'system' : 'assistant',
             content: [{ type: 'text', text: record.summary }],
             toolCalls: [],
             origin: { kind: 'compaction_summary' },
           },
+          time: record.time,
+        });
+        transcript.push({
+          message: createCompactionContinueMessage(),
           time: record.time,
         });
         // Prefer the kept-user count recorded by the live
@@ -265,35 +291,31 @@ export function reduceWireRecords(records: Iterable<AgentRecord>): {
         // longer has. Only fall back to re-deriving for legacy wire records
         // that predate the field.
         if (record.keptUserMessageCount !== undefined) {
-          // +1 for the summary message; +1 more when the selection split into
-          // head + tail, because the live context then also holds an elision
-          // marker message between the two segments.
+          // +2 for the summary and continue-reminder messages; +1 more when the
+          // selection split into head + tail, because the live context then
+          // also holds an elision marker message between the two segments.
           foldedLength =
-            record.keptUserMessageCount + (record.keptHeadUserMessageCount === undefined ? 1 : 2);
+            record.keptUserMessageCount + (record.keptHeadUserMessageCount === undefined ? 2 : 3);
         } else if (record.compactedCount < foldedLength) {
           // Legacy record (predates keptUserMessageCount) that kept
           // history.slice(compactedCount) verbatim. Mirror ContextMemory's
-          // legacy restore ([summary, ...tail]): `foldedLength` here still holds
-          // the pre-compaction live length, so the post-compaction length is the
-          // summary plus the tail kept after compactedCount. Re-deriving the
+          // legacy restore ([summary, ...tail, reminder]): `foldedLength` here
+          // still holds the pre-compaction live length, so the post-compaction
+          // length is the summary and reminder plus the tail kept after
+          // compactedCount. Re-deriving the
           // kept-user count instead would diverge from the live context (and
           // make MessageService mis-handle the messages endpoint for old sessions).
-          foldedLength = 1 + (foldedLength - record.compactedCount);
+          foldedLength = 2 + (foldedLength - record.compactedCount);
         } else {
           // Legacy record whose compactedCount covered the whole live history (no
           // tail, matching live restore's `compactedCount < length` guard): fall
-          // back to the new kept-user + summary derivation. Derive only from
+          // back to the new kept-user + summary + reminder derivation, reusing the
+          // kept count derived for the summary role above. It comes only from
           // entries at or after `clearFloor` — the live ContextMemory rebuilds
           // `_history` from the post-`/clear` messages only, so counting pre-clear
           // prompts here would overstate foldedLength and make MessageService skip
           // unflushed live tail messages for old sessions compacted after a clear.
-          const keptUserMessages = selectRecentUserMessages(
-            collectCompactableUserMessages(
-              transcript.slice(clearFloor).map((entry) => entry.message),
-            ),
-            COMPACT_USER_MESSAGE_MAX_TOKENS,
-          );
-          foldedLength = keptUserMessages.length + 1;
+          foldedLength = fallbackKeptCount! + 2;
         }
         // Drop any open tool exchange and deferred messages exactly like
         // ContextMemory.applyCompaction: late tool results become orphans and

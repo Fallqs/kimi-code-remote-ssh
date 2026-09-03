@@ -20,6 +20,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { KimiConfig } from '../../../src/config';
 import type { AgentOptions } from '../../../src/agent';
 import {
+  COMPACTION_CONTINUE_TEXT,
   COMPACTION_SUMMARY_PREFIX,
   DefaultCompactionStrategy,
   type CompactionStrategy,
@@ -81,10 +82,10 @@ describe('FullCompaction', () => {
       [wire] llm.request                { "kind": "compaction", "provider": "kimi", "model": "kimi-code", "modelAlias": "kimi-code", "thinkingEffort": "off", "maxTokens": 131072, "toolSelect": false, "systemPromptHash": "ec9c34379c88babbc468ef2f3e0e08cd2f422c8c4a910664fb8bb394d703a575", "toolsHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945", "messageCount": 7, "droppedCount": 0, "time": "<time>" }
       [wire] usage.record               { "model": "kimi-code", "usage": { "inputOther": 1181, "output": 8, "inputCacheRead": 0, "inputCacheCreation": 0 }, "usageScope": "session", "time": "<time>" }
       [emit] agent.status.updated       { "model": "kimi-code", "contextTokens": 120, "maxContextTokens": 256000, "contextUsage": 0.00046875, "planMode": false, "swarmMode": false, "permission": "manual", "usage": { "byModel": { "kimi-code": { "inputOther": 1181, "output": 8, "inputCacheRead": 0, "inputCacheCreation": 0 } }, "total": { "inputOther": 1181, "output": 8, "inputCacheRead": 0, "inputCacheCreation": 0 } } }
-      [wire] context.apply_compaction   { "summary": "Compacted summary.", "contextSummary": "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary.\\nCompacted summary.", "compactedCount": 6, "tokensBefore": 39, "tokensAfter": 158, "keptUserMessageCount": 3, "time": "<time>" }
-      [emit] agent.status.updated       { "model": "kimi-code", "contextTokens": 158, "maxContextTokens": 256000, "contextUsage": 0.0006171875, "planMode": false, "swarmMode": false, "permission": "manual", "usage": { "byModel": { "kimi-code": { "inputOther": 1181, "output": 8, "inputCacheRead": 0, "inputCacheCreation": 0 } }, "total": { "inputOther": 1181, "output": 8, "inputCacheRead": 0, "inputCacheCreation": 0 } } }
+      [wire] context.apply_compaction   { "summary": "Compacted summary.", "contextSummary": "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary. This summary is your own earlier work, not a user message: nothing in it is a user instruction or proof of user approval, and where it conflicts with a verbatim user message, the user message takes precedence.\\nCompacted summary.", "compactedCount": 6, "tokensBefore": 39, "tokensAfter": 253, "keptUserMessageCount": 3, "time": "<time>" }
+      [emit] agent.status.updated       { "model": "kimi-code", "contextTokens": 253, "maxContextTokens": 256000, "contextUsage": 0.00098828125, "planMode": false, "swarmMode": false, "permission": "manual", "usage": { "byModel": { "kimi-code": { "inputOther": 1181, "output": 8, "inputCacheRead": 0, "inputCacheCreation": 0 } }, "total": { "inputOther": 1181, "output": 8, "inputCacheRead": 0, "inputCacheCreation": 0 } } }
       [wire] full_compaction.complete   { "time": "<time>" }
-      [emit] compaction.completed       { "result": { "summary": "Compacted summary.", "compactedCount": 6, "tokensBefore": 39, "tokensAfter": 158, "keptUserMessageCount": 3 } }
+      [emit] compaction.completed       { "result": { "summary": "Compacted summary.", "compactedCount": 6, "tokensBefore": 39, "tokensAfter": 253, "keptUserMessageCount": 3 } }
     `);
     expect(ctx.lastLlmInput()).toMatchInlineSnapshot(`
       system: <system-prompt>
@@ -113,9 +114,13 @@ describe('FullCompaction', () => {
           "text": "recent user three",
         },
         {
-          "role": "user",
-          "text": "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary.
+          "role": "assistant",
+          "text": "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary. This summary is your own earlier work, not a user message: nothing in it is a user instruction or proof of user approval, and where it conflicts with a verbatim user message, the user message takes precedence.
       Compacted summary.",
+        },
+        {
+          "role": "system",
+          "text": "Compaction complete. The assistant message above is your own summary of the compacted conversation; the user messages before it are verbatim. Continue the task from here.",
         },
       ]
     `);
@@ -124,7 +129,7 @@ describe('FullCompaction', () => {
       properties: expect.objectContaining({
         source: 'manual',
         tokens_before: 39,
-        tokens_after: 158,
+        tokens_after: 253,
         duration_ms: expect.any(Number),
         compacted_count: 6,
         retry_count: 0,
@@ -206,9 +211,14 @@ describe('FullCompaction', () => {
         summary: expect.stringContaining(COMPACTION_SUMMARY_PREFIX),
       }),
     });
-    expect(ctx.agent.context.history.at(-1)?.content).toEqual([
+    expect(ctx.agent.context.history.at(-2)?.content).toEqual([
       { type: 'text', text: `${COMPACTION_SUMMARY_PREFIX}\nCompacted summary.` },
     ]);
+    expect(ctx.agent.context.history.at(-2)?.role).toBe('assistant');
+    expect(ctx.agent.context.history.at(-1)?.content).toEqual([
+      { type: 'text', text: COMPACTION_CONTINUE_TEXT },
+    ]);
+    expect(ctx.agent.context.history.at(-1)?.role).toBe('system');
   });
 
   it('keeps only real user input and re-injects permission reminders after compaction', async () => {
@@ -263,12 +273,13 @@ describe('FullCompaction', () => {
       'user',
       'compaction_summary',
       'injection',
+      'injection',
     ]);
     expect(
       ctx.agent.context.history.map((message) =>
         message.origin?.kind === 'injection' ? message.origin.variant : undefined,
       ),
-    ).toEqual([undefined, undefined, undefined, 'permission_mode']);
+    ).toEqual([undefined, undefined, undefined, 'compaction_continue', 'permission_mode']);
 
     const applyCompaction = [...ctx.allEvents]
       .toReversed()
@@ -286,6 +297,7 @@ describe('FullCompaction', () => {
     expect(record.contextSummary).toBe(expectedContextSummary);
     expect(record.tokensAfter).toBe(
       estimateTokens(expectedContextSummary) +
+        estimateTokens(COMPACTION_CONTINUE_TEXT) +
         estimateTokensForMessages(ctx.agent.context.history.slice(0, 2)),
     );
   });
@@ -485,7 +497,8 @@ describe('FullCompaction', () => {
     expect(ctx.compactHistory()).toEqual([
       { role: 'user', text: 'old user one' },
       { role: 'user', text: 'recent user two' },
-      { role: 'user', text: `${COMPACTION_SUMMARY_PREFIX}\nRecovered compacted summary.` },
+      { role: 'assistant', text: `${COMPACTION_SUMMARY_PREFIX}\nRecovered compacted summary.` },
+      { role: 'system', text: COMPACTION_CONTINUE_TEXT },
     ]);
     await ctx.expectResumeMatches();
   });
@@ -789,7 +802,8 @@ describe('FullCompaction', () => {
     expect(ctx.compactHistory()).toEqual([
       { role: 'user', text: 'old user one' },
       { role: 'user', text: 'recent user two' },
-      { role: 'user', text: `${COMPACTION_SUMMARY_PREFIX}\nRecovered compacted summary.` },
+      { role: 'assistant', text: `${COMPACTION_SUMMARY_PREFIX}\nRecovered compacted summary.` },
+      { role: 'system', text: COMPACTION_CONTINUE_TEXT },
     ]);
     expect(
       ctx.allEvents.filter((event) => event.event === 'compaction.completed'),
@@ -846,7 +860,8 @@ describe('FullCompaction', () => {
     expect(ctx.compactHistory()).toEqual([
       { role: 'user', text: 'old user one' },
       { role: 'user', text: 'recent user two' },
-      { role: 'user', text: `${COMPACTION_SUMMARY_PREFIX}\nRecovered compacted summary.` },
+      { role: 'assistant', text: `${COMPACTION_SUMMARY_PREFIX}\nRecovered compacted summary.` },
+      { role: 'system', text: COMPACTION_CONTINUE_TEXT },
     ]);
     await ctx.expectResumeMatches();
   });
@@ -1216,11 +1231,12 @@ describe('FullCompaction', () => {
     // The unresolved tool call is sent to the model with a synthetic tool_result
     // closing it (so a strict provider accepts the summary request), while the
     // whole exchange is still dropped from the replacement history, leaving only
-    // the real user messages followed by the compaction summary.
+    // the real user messages followed by the compaction summary and reminder.
     expect(ctx.agent.context.history.map((message) => message.role)).toEqual([
       'user',
       'user',
-      'user',
+      'assistant',
+      'system',
     ]);
     ctx.dispatch({
       type: 'context.append_loop_event',
@@ -1234,7 +1250,8 @@ describe('FullCompaction', () => {
     expect(ctx.agent.context.history.map((message) => message.role)).toEqual([
       'user',
       'user',
-      'user',
+      'assistant',
+      'system',
     ]);
     await ctx.expectResumeMatches();
   });
@@ -1266,10 +1283,10 @@ describe('FullCompaction', () => {
       [wire] llm.request                { "kind": "compaction", "provider": "kimi", "model": "kimi-code", "modelAlias": "kimi-code", "thinkingEffort": "off", "maxTokens": 131072, "toolSelect": false, "systemPromptHash": "ec9c34379c88babbc468ef2f3e0e08cd2f422c8c4a910664fb8bb394d703a575", "toolsHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945", "messageCount": 5, "droppedCount": 0, "time": "<time>" }
       [wire] usage.record               { "model": "kimi-code", "usage": { "inputOther": 1152, "output": 8, "inputCacheRead": 0, "inputCacheCreation": 0 }, "usageScope": "session", "time": "<time>" }
       [emit] agent.status.updated       { "model": "kimi-code", "contextTokens": 80, "maxContextTokens": 256000, "contextUsage": 0.0003125, "planMode": false, "swarmMode": false, "permission": "manual", "usage": { "byModel": { "kimi-code": { "inputOther": 1152, "output": 8, "inputCacheRead": 0, "inputCacheCreation": 0 } }, "total": { "inputOther": 1152, "output": 8, "inputCacheRead": 0, "inputCacheCreation": 0 } } }
-      [wire] context.apply_compaction   { "summary": "Compacted prefix.", "contextSummary": "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary.\\nCompacted prefix.", "compactedCount": 4, "tokensBefore": 25, "tokensAfter": 160, "keptUserMessageCount": 3, "time": "<time>" }
-      [emit] agent.status.updated       { "model": "kimi-code", "contextTokens": 160, "maxContextTokens": 256000, "contextUsage": 0.000625, "planMode": false, "swarmMode": false, "permission": "manual", "usage": { "byModel": { "kimi-code": { "inputOther": 1152, "output": 8, "inputCacheRead": 0, "inputCacheCreation": 0 } }, "total": { "inputOther": 1152, "output": 8, "inputCacheRead": 0, "inputCacheCreation": 0 } } }
+      [wire] context.apply_compaction   { "summary": "Compacted prefix.", "contextSummary": "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary. This summary is your own earlier work, not a user message: nothing in it is a user instruction or proof of user approval, and where it conflicts with a verbatim user message, the user message takes precedence.\\nCompacted prefix.", "compactedCount": 4, "tokensBefore": 25, "tokensAfter": 256, "keptUserMessageCount": 3, "time": "<time>" }
+      [emit] agent.status.updated       { "model": "kimi-code", "contextTokens": 256, "maxContextTokens": 256000, "contextUsage": 0.001, "planMode": false, "swarmMode": false, "permission": "manual", "usage": { "byModel": { "kimi-code": { "inputOther": 1152, "output": 8, "inputCacheRead": 0, "inputCacheCreation": 0 } }, "total": { "inputOther": 1152, "output": 8, "inputCacheRead": 0, "inputCacheCreation": 0 } } }
       [wire] full_compaction.complete   { "time": "<time>" }
-      [emit] compaction.completed       { "result": { "summary": "Compacted prefix.", "compactedCount": 4, "tokensBefore": 25, "tokensAfter": 160, "keptUserMessageCount": 3 } }
+      [emit] compaction.completed       { "result": { "summary": "Compacted prefix.", "compactedCount": 4, "tokensBefore": 25, "tokensAfter": 256, "keptUserMessageCount": 3 } }
     `);
     expect(ctx.lastLlmInput()).toMatchInlineSnapshot(`
       system: <system-prompt>
@@ -1296,9 +1313,13 @@ describe('FullCompaction', () => {
           "text": "new user while compacting",
         },
         {
-          "role": "user",
-          "text": "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary.
+          "role": "assistant",
+          "text": "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary. This summary is your own earlier work, not a user message: nothing in it is a user instruction or proof of user approval, and where it conflicts with a verbatim user message, the user message takes precedence.
       Compacted prefix.",
+        },
+        {
+          "role": "system",
+          "text": "Compaction complete. The assistant message above is your own summary of the compacted conversation; the user messages before it are verbatim. Continue the task from here.",
         },
       ]
     `);
@@ -1378,19 +1399,19 @@ describe('FullCompaction', () => {
       [wire] llm.request                 { "kind": "compaction", "provider": "kimi", "model": "kimi-code", "modelAlias": "kimi-code", "thinkingEffort": "off", "maxTokens": 131072, "toolSelect": false, "systemPromptHash": "ec9c34379c88babbc468ef2f3e0e08cd2f422c8c4a910664fb8bb394d703a575", "toolsHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945", "messageCount": 8, "droppedCount": 0, "time": "<time>" }
       [wire] usage.record                { "model": "kimi-code", "usage": { "inputOther": 1173, "output": 9, "inputCacheRead": 0, "inputCacheCreation": 0 }, "usageScope": "session", "time": "<time>" }
       [emit] agent.status.updated        { "model": "kimi-code", "contextTokens": 950000, "maxContextTokens": 256000, "contextUsage": 3.7109375, "planMode": false, "swarmMode": false, "permission": "manual", "usage": { "byModel": { "kimi-code": { "inputOther": 1173, "output": 9, "inputCacheRead": 0, "inputCacheCreation": 0 } }, "total": { "inputOther": 1173, "output": 9, "inputCacheRead": 0, "inputCacheCreation": 0 } } }
-      [wire] context.apply_compaction    { "summary": "Auto compacted summary.", "contextSummary": "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary.\\nAuto compacted summary.", "compactedCount": 7, "tokensBefore": 46, "tokensAfter": 166, "keptUserMessageCount": 4, "time": "<time>" }
-      [emit] agent.status.updated        { "model": "kimi-code", "contextTokens": 166, "maxContextTokens": 256000, "contextUsage": 0.0006484375, "planMode": false, "swarmMode": false, "permission": "manual", "usage": { "byModel": { "kimi-code": { "inputOther": 1173, "output": 9, "inputCacheRead": 0, "inputCacheCreation": 0 } }, "total": { "inputOther": 1173, "output": 9, "inputCacheRead": 0, "inputCacheCreation": 0 } } }
+      [wire] context.apply_compaction    { "summary": "Auto compacted summary.", "contextSummary": "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary. This summary is your own earlier work, not a user message: nothing in it is a user instruction or proof of user approval, and where it conflicts with a verbatim user message, the user message takes precedence.\\nAuto compacted summary.", "compactedCount": 7, "tokensBefore": 46, "tokensAfter": 261, "keptUserMessageCount": 4, "time": "<time>" }
+      [emit] agent.status.updated        { "model": "kimi-code", "contextTokens": 261, "maxContextTokens": 256000, "contextUsage": 0.00101953125, "planMode": false, "swarmMode": false, "permission": "manual", "usage": { "byModel": { "kimi-code": { "inputOther": 1173, "output": 9, "inputCacheRead": 0, "inputCacheCreation": 0 } }, "total": { "inputOther": 1173, "output": 9, "inputCacheRead": 0, "inputCacheCreation": 0 } } }
       [wire] full_compaction.complete    { "time": "<time>" }
-      [emit] compaction.completed        { "result": { "summary": "Auto compacted summary.", "compactedCount": 7, "tokensBefore": 46, "tokensAfter": 166, "keptUserMessageCount": 4 } }
+      [emit] compaction.completed        { "result": { "summary": "Auto compacted summary.", "compactedCount": 7, "tokensBefore": 46, "tokensAfter": 261, "keptUserMessageCount": 4 } }
       [wire] context.append_loop_event   { "event": { "type": "step.begin", "uuid": "<uuid-1>", "turnId": "0", "step": 1 }, "time": "<time>" }
       [emit] turn.step.started           { "turnId": 0, "step": 1, "stepId": "<uuid-1>" }
-      [wire] llm.request                 { "kind": "loop", "provider": "kimi", "model": "kimi-code", "modelAlias": "kimi-code", "thinkingEffort": "off", "maxTokens": 255834, "toolSelect": false, "systemPromptHash": "ec9c34379c88babbc468ef2f3e0e08cd2f422c8c4a910664fb8bb394d703a575", "toolsHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945", "messageCount": 2, "turnStep": "0.1", "time": "<time>" }
+      [wire] llm.request                 { "kind": "loop", "provider": "kimi", "model": "kimi-code", "modelAlias": "kimi-code", "thinkingEffort": "off", "maxTokens": 255739, "toolSelect": false, "systemPromptHash": "ec9c34379c88babbc468ef2f3e0e08cd2f422c8c4a910664fb8bb394d703a575", "toolsHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945", "messageCount": 3, "turnStep": "0.1", "time": "<time>" }
       [emit] assistant.delta             { "turnId": 0, "delta": "I can answer after compaction." }
       [wire] context.append_loop_event   { "event": { "type": "content.part", "uuid": "<uuid-2>", "turnId": "0", "step": 1, "stepUuid": "<uuid-1>", "part": { "type": "text", "text": "I can answer after compaction." } }, "time": "<time>" }
-      [wire] context.append_loop_event   { "event": { "type": "step.end", "uuid": "<uuid-1>", "turnId": "0", "step": 1, "usage": { "inputOther": 165, "output": 11, "inputCacheRead": 0, "inputCacheCreation": 0 }, "finishReason": "end_turn", "messageId": "mock-2" }, "time": "<time>" }
-      [emit] turn.step.completed         { "turnId": 0, "step": 1, "stepId": "<uuid-1>", "usage": { "inputOther": 165, "output": 11, "inputCacheRead": 0, "inputCacheCreation": 0 }, "finishReason": "end_turn" }
-      [wire] usage.record                { "model": "kimi-code", "usage": { "inputOther": 165, "output": 11, "inputCacheRead": 0, "inputCacheCreation": 0 }, "usageScope": "turn", "time": "<time>" }
-      [emit] agent.status.updated        { "model": "kimi-code", "contextTokens": 176, "maxContextTokens": 256000, "contextUsage": 0.0006875, "planMode": false, "swarmMode": false, "permission": "manual", "usage": { "byModel": { "kimi-code": { "inputOther": 1338, "output": 20, "inputCacheRead": 0, "inputCacheCreation": 0 } }, "total": { "inputOther": 1338, "output": 20, "inputCacheRead": 0, "inputCacheCreation": 0 }, "currentTurn": { "inputOther": 165, "output": 11, "inputCacheRead": 0, "inputCacheCreation": 0 } } }
+      [wire] context.append_loop_event   { "event": { "type": "step.end", "uuid": "<uuid-1>", "turnId": "0", "step": 1, "usage": { "inputOther": 264, "output": 11, "inputCacheRead": 0, "inputCacheCreation": 0 }, "finishReason": "end_turn", "messageId": "mock-2" }, "time": "<time>" }
+      [emit] turn.step.completed         { "turnId": 0, "step": 1, "stepId": "<uuid-1>", "usage": { "inputOther": 264, "output": 11, "inputCacheRead": 0, "inputCacheCreation": 0 }, "finishReason": "end_turn" }
+      [wire] usage.record                { "model": "kimi-code", "usage": { "inputOther": 264, "output": 11, "inputCacheRead": 0, "inputCacheCreation": 0 }, "usageScope": "turn", "time": "<time>" }
+      [emit] agent.status.updated        { "model": "kimi-code", "contextTokens": 275, "maxContextTokens": 256000, "contextUsage": 0.00107421875, "planMode": false, "swarmMode": false, "permission": "manual", "usage": { "byModel": { "kimi-code": { "inputOther": 1437, "output": 20, "inputCacheRead": 0, "inputCacheCreation": 0 } }, "total": { "inputOther": 1437, "output": 20, "inputCacheRead": 0, "inputCacheCreation": 0 }, "currentTurn": { "inputOther": 264, "output": 11, "inputCacheRead": 0, "inputCacheCreation": 0 } } }
       [emit] turn.ended                  { "turnId": 0, "reason": "completed" }
     `);
     expect(ctx.llmInputs()).toMatchInlineSnapshot(`
@@ -1410,14 +1431,15 @@ describe('FullCompaction', () => {
       call 2:
         messages:
           user: text "old user one\\n\\nold user two\\n\\nrecent user three\\n\\nAnswer after compacting"
-          user: text "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary.\\nAuto compacted summary."
+          assistant: text "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary. This summary is your own earlier work, not a user message: nothing in it is a user instruction or proof of user approval, and where it conflicts with a verbatim user message, the user message takes precedence.\\nAuto compacted summary."
+          system: text "Compaction complete. The assistant message above is your own summary of the compacted conversation; the user messages before it are verbatim. Continue the task from here."
     `);
     expect(records).toContainEqual({
       event: 'compaction_finished',
       properties: expect.objectContaining({
         source: 'auto',
         tokens_before: 46,
-        tokens_after: 166,
+        tokens_after: 261,
         compacted_count: 7,
         retry_count: 0,
       }),
@@ -1452,14 +1474,19 @@ describe('FullCompaction', () => {
     await compacted;
 
     // Compaction drops the in-flight tool exchange and the deferred reminder
-    // (initial context is rebuilt every turn); only real user messages and
-    // the compaction summary remain.
+    // (initial context is rebuilt every turn); only real user messages, the
+    // assistant-role compaction summary, and the continue reminder remain.
     expect(ctx.agent.context.history.map((m) => m.role)).toEqual([
       'user',
       'user',
-      'user',
+      'assistant',
+      'system',
     ]);
-    expect(ctx.agent.context.history.at(-1)?.origin).toEqual({ kind: 'compaction_summary' });
+    expect(ctx.agent.context.history.at(-2)?.origin).toEqual({ kind: 'compaction_summary' });
+    expect(ctx.agent.context.history.at(-1)?.origin).toEqual({
+      kind: 'injection',
+      variant: 'compaction_continue',
+    });
 
     // The dropped tool calls no longer exist, so late tool results are orphans
     // and do not change history.
@@ -1485,7 +1512,8 @@ describe('FullCompaction', () => {
     expect(ctx.agent.context.history.map((m) => m.role)).toEqual([
       'user',
       'user',
-      'user',
+      'assistant',
+      'system',
     ]);
   });
 
@@ -1518,13 +1546,19 @@ describe('FullCompaction', () => {
 
     // Compaction drops the partially-resolved tool exchange and the deferred
     // reminder (initial context is rebuilt every turn); only real user
-    // messages and the compaction summary remain.
+    // messages, the assistant-role compaction summary, and the continue
+    // reminder remain.
     expect(ctx.agent.context.history.map((m) => m.role)).toEqual([
       'user',
       'user',
-      'user',
+      'assistant',
+      'system',
     ]);
-    expect(ctx.agent.context.history.at(-1)?.origin).toEqual({ kind: 'compaction_summary' });
+    expect(ctx.agent.context.history.at(-2)?.origin).toEqual({ kind: 'compaction_summary' });
+    expect(ctx.agent.context.history.at(-1)?.origin).toEqual({
+      kind: 'injection',
+      variant: 'compaction_continue',
+    });
 
     // The dropped tool calls no longer exist, so a late tool result is an orphan
     // and does not change history.
@@ -1541,7 +1575,8 @@ describe('FullCompaction', () => {
     expect(ctx.agent.context.history.map((m) => m.role)).toEqual([
       'user',
       'user',
-      'user',
+      'assistant',
+      'system',
     ]);
   });
 
@@ -1576,7 +1611,8 @@ describe('FullCompaction', () => {
     expect(ctx.llmCalls).toHaveLength(1);
     expect(ctx.compactHistory()).toEqual([
       { role: 'user', text: 'only pending user' },
-      { role: 'user', text: `${COMPACTION_SUMMARY_PREFIX}\nSingle message summary.` },
+      { role: 'assistant', text: `${COMPACTION_SUMMARY_PREFIX}\nSingle message summary.` },
+      { role: 'system', text: COMPACTION_CONTINUE_TEXT },
     ]);
     await ctx.expectResumeMatches();
   });
@@ -1874,8 +1910,9 @@ describe('FullCompaction', () => {
           "user: old user one
 
       Retry after provider overflow",
-          "user: The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary.
+          "assistant: The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary. This summary is your own earlier work, not a user message: nothing in it is a user instruction or proof of user approval, and where it conflicts with a verbatim user message, the user message takes precedence.
       Overflow compacted summary.",
+          "system: Compaction complete. The assistant message above is your own summary of the compacted conversation; the user messages before it are verbatim. Continue the task from here.",
         ],
       ]
     `);
@@ -2509,13 +2546,13 @@ describe('FullCompaction', () => {
       [wire] llm.request                 { "kind": "compaction", "provider": "kimi", "model": "mock-model", "modelAlias": "mock-model", "thinkingEffort": "off", "maxTokens": 131072, "toolSelect": false, "systemPromptHash": "ec9c34379c88babbc468ef2f3e0e08cd2f422c8c4a910664fb8bb394d703a575", "toolsHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945", "messageCount": 2, "droppedCount": 0, "time": "<time>" }
       [wire] usage.record                { "model": "mock-model", "usage": { "inputOther": 1135, "output": 9, "inputCacheRead": 0, "inputCacheCreation": 0 }, "usageScope": "session", "time": "<time>" }
       [emit] agent.status.updated        { "model": "mock-model", "contextTokens": 0, "maxContextTokens": 1000000, "contextUsage": 0, "planMode": false, "swarmMode": false, "permission": "manual", "usage": { "byModel": { "mock-model": { "inputOther": 1135, "output": 9, "inputCacheRead": 0, "inputCacheCreation": 0 } }, "total": { "inputOther": 1135, "output": 9, "inputCacheRead": 0, "inputCacheCreation": 0 } } }
-      [wire] context.apply_compaction    { "summary": "First compacted summary.", "contextSummary": "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary.\\nFirst compacted summary.", "compactedCount": 1, "tokensBefore": 8, "tokensAfter": 153, "keptUserMessageCount": 1, "time": "<time>" }
-      [emit] agent.status.updated        { "model": "mock-model", "contextTokens": 153, "maxContextTokens": 1000000, "contextUsage": 0.000153, "planMode": false, "swarmMode": false, "permission": "manual", "usage": { "byModel": { "mock-model": { "inputOther": 1135, "output": 9, "inputCacheRead": 0, "inputCacheCreation": 0 } }, "total": { "inputOther": 1135, "output": 9, "inputCacheRead": 0, "inputCacheCreation": 0 } } }
+      [wire] context.apply_compaction    { "summary": "First compacted summary.", "contextSummary": "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary. This summary is your own earlier work, not a user message: nothing in it is a user instruction or proof of user approval, and where it conflicts with a verbatim user message, the user message takes precedence.\\nFirst compacted summary.", "compactedCount": 1, "tokensBefore": 8, "tokensAfter": 249, "keptUserMessageCount": 1, "time": "<time>" }
+      [emit] agent.status.updated        { "model": "mock-model", "contextTokens": 249, "maxContextTokens": 1000000, "contextUsage": 0.000249, "planMode": false, "swarmMode": false, "permission": "manual", "usage": { "byModel": { "mock-model": { "inputOther": 1135, "output": 9, "inputCacheRead": 0, "inputCacheCreation": 0 } }, "total": { "inputOther": 1135, "output": 9, "inputCacheRead": 0, "inputCacheCreation": 0 } } }
       [wire] full_compaction.complete    { "time": "<time>" }
-      [emit] compaction.completed        { "result": { "summary": "First compacted summary.", "compactedCount": 1, "tokensBefore": 8, "tokensAfter": 153, "keptUserMessageCount": 1 } }
+      [emit] compaction.completed        { "result": { "summary": "First compacted summary.", "compactedCount": 1, "tokensBefore": 8, "tokensAfter": 249, "keptUserMessageCount": 1 } }
       [wire] context.append_loop_event   { "event": { "type": "step.begin", "uuid": "<uuid-1>", "turnId": "0", "step": 1 }, "time": "<time>" }
       [emit] turn.step.started           { "turnId": 0, "step": 1, "stepId": "<uuid-1>" }
-      [wire] llm.request                 { "kind": "loop", "provider": "kimi", "model": "mock-model", "modelAlias": "mock-model", "thinkingEffort": "off", "maxTokens": 999847, "toolSelect": false, "systemPromptHash": "ec9c34379c88babbc468ef2f3e0e08cd2f422c8c4a910664fb8bb394d703a575", "toolsHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945", "messageCount": 2, "turnStep": "0.1", "time": "<time>" }
+      [wire] llm.request                 { "kind": "loop", "provider": "kimi", "model": "mock-model", "modelAlias": "mock-model", "thinkingEffort": "off", "maxTokens": 999751, "toolSelect": false, "systemPromptHash": "ec9c34379c88babbc468ef2f3e0e08cd2f422c8c4a910664fb8bb394d703a575", "toolsHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945", "messageCount": 3, "turnStep": "0.1", "time": "<time>" }
       [emit] assistant.delta             { "turnId": 0, "delta": "I need a tool." }
       [emit] tool.call.delta             { "turnId": 0, "toolCallId": "call_missing", "name": "MissingTool", "argumentsPart": "{}" }
       [wire] context.append_loop_event   { "event": { "type": "content.part", "uuid": "<uuid-2>", "turnId": "0", "step": 1, "stepUuid": "<uuid-1>", "part": { "type": "text", "text": "I need a tool." } }, "time": "<time>" }
@@ -2523,10 +2560,10 @@ describe('FullCompaction', () => {
       [emit] tool.call.started           { "turnId": 0, "toolCallId": "call_missing", "name": "MissingTool", "args": {} }
       [wire] context.append_loop_event   { "event": { "type": "tool.result", "parentUuid": "call_missing", "toolCallId": "call_missing", "result": { "output": "Tool \\"MissingTool\\" not found", "isError": true } }, "time": "<time>" }
       [emit] tool.result                 { "turnId": 0, "toolCallId": "call_missing", "output": "Tool \\"MissingTool\\" not found", "isError": true }
-      [wire] context.append_loop_event   { "event": { "type": "step.end", "uuid": "<uuid-1>", "turnId": "0", "step": 1, "usage": { "inputOther": 154, "output": 11, "inputCacheRead": 0, "inputCacheCreation": 0 }, "finishReason": "tool_use", "messageId": "mock-2" }, "time": "<time>" }
-      [emit] turn.step.completed         { "turnId": 0, "step": 1, "stepId": "<uuid-1>", "usage": { "inputOther": 154, "output": 11, "inputCacheRead": 0, "inputCacheCreation": 0 }, "finishReason": "tool_use" }
-      [wire] usage.record                { "model": "mock-model", "usage": { "inputOther": 154, "output": 11, "inputCacheRead": 0, "inputCacheCreation": 0 }, "usageScope": "turn", "time": "<time>" }
-      [emit] agent.status.updated        { "model": "mock-model", "contextTokens": 165, "maxContextTokens": 1000000, "contextUsage": 0.000165, "planMode": false, "swarmMode": false, "permission": "manual", "usage": { "byModel": { "mock-model": { "inputOther": 1289, "output": 20, "inputCacheRead": 0, "inputCacheCreation": 0 } }, "total": { "inputOther": 1289, "output": 20, "inputCacheRead": 0, "inputCacheCreation": 0 }, "currentTurn": { "inputOther": 154, "output": 11, "inputCacheRead": 0, "inputCacheCreation": 0 } } }
+      [wire] context.append_loop_event   { "event": { "type": "step.end", "uuid": "<uuid-1>", "turnId": "0", "step": 1, "usage": { "inputOther": 254, "output": 11, "inputCacheRead": 0, "inputCacheCreation": 0 }, "finishReason": "tool_use", "messageId": "mock-2" }, "time": "<time>" }
+      [emit] turn.step.completed         { "turnId": 0, "step": 1, "stepId": "<uuid-1>", "usage": { "inputOther": 254, "output": 11, "inputCacheRead": 0, "inputCacheCreation": 0 }, "finishReason": "tool_use" }
+      [wire] usage.record                { "model": "mock-model", "usage": { "inputOther": 254, "output": 11, "inputCacheRead": 0, "inputCacheCreation": 0 }, "usageScope": "turn", "time": "<time>" }
+      [emit] agent.status.updated        { "model": "mock-model", "contextTokens": 265, "maxContextTokens": 1000000, "contextUsage": 0.000265, "planMode": false, "swarmMode": false, "permission": "manual", "usage": { "byModel": { "mock-model": { "inputOther": 1389, "output": 20, "inputCacheRead": 0, "inputCacheCreation": 0 } }, "total": { "inputOther": 1389, "output": 20, "inputCacheRead": 0, "inputCacheCreation": 0 }, "currentTurn": { "inputOther": 254, "output": 11, "inputCacheRead": 0, "inputCacheCreation": 0 } } }
       [emit] turn.step.interrupted       { "turnId": 0, "step": 2, "reason": "error", "message": "Compaction limit exceeded (1)" }
       [emit] turn.ended                  { "turnId": 0, "reason": "failed", "error": { "code": "context.overflow", "message": "Compaction limit exceeded (1)", "name": "KimiError", "details": { "maxCompactions": 1, "turnId": 0 }, "retryable": true } }
     `);
@@ -2544,7 +2581,8 @@ describe('FullCompaction', () => {
       call 2:
         messages:
           user: text "Trigger repeated compaction"
-          user: text "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary.\\nFirst compacted summary."
+          assistant: text "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary. This summary is your own earlier work, not a user message: nothing in it is a user instruction or proof of user approval, and where it conflicts with a verbatim user message, the user message takes precedence.\\nFirst compacted summary."
+          system: text "Compaction complete. The assistant message above is your own summary of the compacted conversation; the user messages before it are verbatim. Continue the task from here."
     `);
     await ctx.expectResumeMatches();
   });

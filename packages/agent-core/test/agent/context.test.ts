@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { renderNotificationXml } from '../../src/agent/context/notification-xml';
 import { project } from '../../src/agent/context/projector';
 import type { ContextMessage } from '../../src/agent/context/types';
+import { COMPACTION_CONTINUE_TEXT } from '../../src/agent/compaction/handoff';
 import { buildImageCompressionCaption } from '../../src/tools/support/image-compress';
 import { estimateTokensForMessages } from '../../src/utils/tokens';
 import { createFakeKaos } from '../tools/fixtures/fake-kaos';
@@ -971,15 +972,17 @@ describe('Agent context', () => {
       variant: 'host',
     });
 
-    // Compaction keeps only the real user prompt plus the summary; the deferred
+    // Compaction keeps only the real user prompt plus the assistant-role
+    // summary and the system-role continue reminder; the deferred
     // first reminder is dropped because initial context is rebuilt every turn.
     // The second reminder, appended after compaction, is preserved.
     expect(ctx.agent.context.messages.map((message) => message.role)).toEqual([
       'user',
-      'user',
+      'assistant',
+      'system',
       'user',
     ]);
-    expect(ctx.agent.context.messages[2]?.content).toEqual([
+    expect(ctx.agent.context.messages[3]?.content).toEqual([
       { type: 'text', text: '<system-reminder>\nsecond reminder\n</system-reminder>' },
     ]);
 
@@ -997,7 +1000,8 @@ describe('Agent context', () => {
     // result is ignored and the history is unchanged.
     expect(ctx.agent.context.messages.map((message) => message.role)).toEqual([
       'user',
-      'user',
+      'assistant',
+      'system',
       'user',
     ]);
     await ctx.expectResumeMatches();
@@ -1028,7 +1032,8 @@ describe('Agent context', () => {
 
     expect(ctx.agent.context.history.map(({ role, origin }) => ({ role, origin }))).toEqual([
       { role: 'user', origin: { kind: 'user' } },
-      { role: 'user', origin: { kind: 'compaction_summary' } },
+      { role: 'assistant', origin: { kind: 'compaction_summary' } },
+      { role: 'system', origin: { kind: 'injection', variant: 'compaction_continue' } },
       { role: 'user', origin: { kind: 'injection', variant: 'host' } },
     ]);
     expect(result.keptUserMessageCount).toBe(1);
@@ -1063,7 +1068,11 @@ describe('Agent context', () => {
       compactedCount: 1,
       tokensBefore: 100,
     });
-    expect(ctx.agent.context.history.at(-1)?.origin).toEqual({ kind: 'compaction_summary' });
+    expect(ctx.agent.context.history.at(-2)?.origin).toEqual({ kind: 'compaction_summary' });
+    expect(ctx.agent.context.history.at(-1)?.origin).toEqual({
+      kind: 'injection',
+      variant: 'compaction_continue',
+    });
 
     ctx.mockNextResponse({ type: 'text', text: 'after compaction' });
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'new prompt' }] });
@@ -1074,7 +1083,8 @@ describe('Agent context', () => {
       tools: []
       messages:
         user: text "old user message\\n\\nrecent user message"
-        user: text "summary of old context"
+        assistant: text "summary of old context"
+        system: text "Compaction complete. The assistant message above is your own summary of the compacted conversation; the user messages before it are verbatim. Continue the task from here."
         user: text "new prompt"
     `);
     await ctx.expectResumeMatches();
@@ -1247,9 +1257,14 @@ describe('Agent context', () => {
         content: [{ type: 'text', text: 'old user message' }],
       }),
       expect.objectContaining({
-        role: 'user',
+        role: 'assistant',
         origin: { kind: 'compaction_summary' },
         content: [{ type: 'text', text: 'summary of compacted context' }],
+      }),
+      expect.objectContaining({
+        role: 'system',
+        origin: { kind: 'injection', variant: 'compaction_continue' },
+        content: [{ type: 'text', text: COMPACTION_CONTINUE_TEXT }],
       }),
     ]);
     expect(ctx.newEvents()).toContainEqual(
@@ -1286,9 +1301,14 @@ describe('Agent context', () => {
         content: [{ type: 'text', text: 'old user message' }],
       }),
       expect.objectContaining({
-        role: 'user',
+        role: 'assistant',
         origin: { kind: 'compaction_summary' },
         content: [{ type: 'text', text: 'summary of compacted context' }],
+      }),
+      expect.objectContaining({
+        role: 'system',
+        origin: { kind: 'injection', variant: 'compaction_continue' },
+        content: [{ type: 'text', text: COMPACTION_CONTINUE_TEXT }],
       }),
     ]);
   });

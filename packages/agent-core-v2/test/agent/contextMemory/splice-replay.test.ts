@@ -4,6 +4,7 @@ import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { TestInstantiationService } from '#/_base/di/test';
 import { IAgentBlobService } from '#/agent/blob/agentBlobService';
+import { COMPACTION_CONTINUE_TEXT } from '#/agent/contextMemory/compactionHandoff';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { AgentContextMemoryService } from '#/agent/contextMemory/contextMemoryService';
 import {
@@ -230,11 +231,16 @@ describe('AgentContextMemoryService (wire-backed)', () => {
       new ContextApplyCompaction({ agentId: 'test-agent', summary: 'sum', compactedCount: 1, tokensBefore: 0, tokensAfter: 0 }),
     );
     expect(model()).not.toBe(prev);
-    expect(model()).toHaveLength(2);
+    expect(model()).toHaveLength(3);
     expect(model()![0]).toMatchObject({
-      role: 'user',
+      role: 'system',
       content: [{ type: 'text', text: 'sum' }],
       origin: { kind: 'compaction_summary' },
+    });
+    expect(model()![2]).toMatchObject({
+      role: 'system',
+      content: [{ type: 'text', text: COMPACTION_CONTINUE_TEXT }],
+      origin: { kind: 'injection', variant: 'compaction_continue' },
     });
 
     prev = model();
@@ -337,10 +343,14 @@ describe('AgentContextMemoryService (wire-backed)', () => {
     );
 
     const model = replay.agentState.get(contextMemoryKey);
-    expect(model.map(textOf)).toEqual(['model-facing summary', 'tail']);
+    expect(model.map(textOf)).toEqual(['model-facing summary', 'tail', COMPACTION_CONTINUE_TEXT]);
     expect(model[0]).toMatchObject({
-      role: 'user',
+      role: 'system',
       origin: { kind: 'compaction_summary' },
+    });
+    expect(model[2]).toMatchObject({
+      role: 'system',
+      origin: { kind: 'injection', variant: 'compaction_continue' },
     });
   });
 
@@ -376,8 +386,18 @@ describe('AgentContextMemoryService (wire-backed)', () => {
     );
 
     const model = replay.agentState.get(contextMemoryKey);
-    expect(model.map((message) => message.role)).toEqual(['user', 'user', 'user']);
-    expect(model.map(textOf)).toEqual(['old user', 'recent user', 'model-facing summary']);
+    expect(model.map((message) => message.role)).toEqual([
+      'user',
+      'user',
+      'assistant',
+      'system',
+    ]);
+    expect(model.map(textOf)).toEqual([
+      'old user',
+      'recent user',
+      'model-facing summary',
+      COMPACTION_CONTINUE_TEXT,
+    ]);
     expect(model[2]).toMatchObject({
       origin: { kind: 'compaction_summary' },
     });
@@ -406,10 +426,19 @@ describe('AgentContextMemoryService (wire-backed)', () => {
     );
 
     const model = replay.agentState.get(contextMemoryKey);
-    expect(model.map(textOf)).toEqual(['old user', 'recent user', 'OLD SUMMARY']);
+    expect(model.map(textOf)).toEqual([
+      'old user',
+      'recent user',
+      'OLD SUMMARY',
+      COMPACTION_CONTINUE_TEXT,
+    ]);
     expect(model[2]).toMatchObject({
-      role: 'user',
+      role: 'assistant',
       origin: { kind: 'compaction_summary' },
+    });
+    expect(model[3]).toMatchObject({
+      role: 'system',
+      origin: { kind: 'injection', variant: 'compaction_continue' },
     });
   });
 
@@ -439,9 +468,14 @@ describe('AgentContextMemoryService (wire-backed)', () => {
     );
 
     const model = replay.agentState.get(contextMemoryKey);
-    expect(model).toHaveLength(2);
+    expect(model).toHaveLength(3);
     expect(model[0]).toEqual(legacySummary);
     expect(textOf(model[1]!)).toBe('tail');
+    expect(model[2]).toMatchObject({
+      role: 'system',
+      content: [{ type: 'text', text: COMPACTION_CONTINUE_TEXT }],
+      origin: { kind: 'injection', variant: 'compaction_continue' },
+    });
   });
 
   it('offloads an oversized content part on dispatch and rehydrates it byte-for-byte on replay', async () => {

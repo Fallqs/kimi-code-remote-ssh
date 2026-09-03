@@ -7,6 +7,7 @@ import {
   buildContextCompactionShape,
   COMPACT_USER_MESSAGE_HEAD_TOKENS,
   COMPACT_USER_MESSAGE_MAX_TOKENS,
+  COMPACTION_CONTINUE_TEXT,
   selectCompactionUserMessages,
   type TokenEstimate,
 } from '#/agent/contextMemory/compactionHandoff';
@@ -787,7 +788,7 @@ describe('Agent context', () => {
       );
 
       expect(shape.tokensAfter).toBe(0);
-      expect(shape.messages.map((m) => m.role)).toEqual(['user', 'user']);
+      expect(shape.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'system']);
       expect(shape.messages[1]?.origin?.kind).toBe('compaction_summary');
     });
 
@@ -865,7 +866,11 @@ describe('Agent context', () => {
 
       expect(shape.messages[0]).toBe(legacySummary);
       expect(shape.messages[1]).toBe(history[1]);
-      expect(shape.messages.map(textOf)).toEqual(['legacy summary', 'tail']);
+      expect(shape.messages.map(textOf)).toEqual([
+        'legacy summary',
+        'tail',
+        COMPACTION_CONTINUE_TEXT,
+      ]);
     });
   });
 });

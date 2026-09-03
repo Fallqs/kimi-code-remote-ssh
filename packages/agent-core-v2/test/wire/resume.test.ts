@@ -18,6 +18,7 @@ import { IAgentTaskService } from '#/agent/task/task';
 import { IAgentPlanService } from '#/features/plan/plan';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { turnKey } from '#/agent/loop/turnOps';
+import { COMPACTION_CONTINUE_TEXT } from '#/agent/contextMemory/compactionHandoff';
 import {
   createAgentTaskPersistence,
   type TaskServiceTestManager,
@@ -310,7 +311,8 @@ describe('Agent resume', () => {
         system: <system-prompt>
         tools: Bash
         messages:
-          user: text "Historical compacted summary."
+          system: text "Historical compacted summary."
+          system: text "Compaction complete. The assistant message above is your own summary of the compacted conversation; the user messages before it are verbatim. Continue the task from here."
           user: text "Fresh prompt after resume"
           user: text <date-reminder>
           user: text <plan-mode-reminder>
@@ -674,9 +676,14 @@ describe('Agent resume', () => {
 
     expect(ctx.context.get()).toEqual([
       expect.objectContaining({
-        role: 'user',
+        role: 'system',
         content: [{ type: 'text', text: 'Compacted implementation notes.' }],
         origin: { kind: 'compaction_summary' },
+      }),
+      expect.objectContaining({
+        role: 'system',
+        content: [{ type: 'text', text: COMPACTION_CONTINUE_TEXT }],
+        origin: { kind: 'injection', variant: 'compaction_continue' },
       }),
     ]);
   });

@@ -319,7 +319,10 @@ function mergeConsecutiveAssistantMessages(
 
 function dropLeadingNonUserMessages(messages: readonly Message[], onAnomaly?: OnAnomaly): Message[] {
   let start = 0;
-  while (start < messages.length && messages[start]?.role !== 'user') {
+  while (
+    start < messages.length &&
+    (messages[start]!.role === 'assistant' || messages[start]!.role === 'tool')
+  ) {
     onAnomaly?.({ kind: 'leading_non_user_dropped', role: messages[start]!.role });
     start += 1;
   }

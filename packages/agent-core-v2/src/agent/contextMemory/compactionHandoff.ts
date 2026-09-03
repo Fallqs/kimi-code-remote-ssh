@@ -65,8 +65,9 @@ export function buildContextCompactionShape(
   if (usesLegacyTailShape(input)) {
     const contextSummary = input.contextSummary ?? input.summary;
     const messages = [
-      input.legacySummaryMessage ?? createCompactionSummaryMessage(contextSummary),
+      input.legacySummaryMessage ?? createCompactionSummaryMessage(contextSummary, 'system'),
       ...history.slice(input.compactedCount),
+      createCompactionContinueMessage(),
     ];
     return {
       summary: input.summary,
@@ -94,11 +95,13 @@ export function buildContextCompactionShape(
     ? [...selection.head, ...selection.tail]
     : [...selection.head, elisionMessage, ...selection.tail];
   const contextSummary = input.contextSummary ?? input.summary;
+  const continueMessage = createCompactionContinueMessage();
   const tokensAfter =
     input.tokensAfter ??
     (input.requestOverheadTokens ?? 0) +
       (input.summaryOutputTokens ?? estimate.text(contextSummary)) +
-      estimate.messages(keptMessages);
+      estimate.messages(keptMessages) +
+      estimate.message(continueMessage);
   const keptUserMessageCount =
     input.keptUserMessageCount ?? selection.head.length + selection.tail.length;
   const keptHeadUserMessageCount =
@@ -113,7 +116,14 @@ export function buildContextCompactionShape(
     keptUserMessageCount,
     keptHeadUserMessageCount,
     droppedCount: input.droppedCount,
-    messages: [...keptMessages, createCompactionSummaryMessage(contextSummary)],
+    messages: [
+      ...keptMessages,
+      createCompactionSummaryMessage(
+        contextSummary,
+        keptMessages.length === 0 ? 'system' : 'assistant',
+      ),
+      continueMessage,
+    ],
   };
 }
 
@@ -122,12 +132,29 @@ export function buildCompactionSummaryText(summary: string): string {
   return `${COMPACTION_SUMMARY_PREFIX}\n${suffix.length > 0 ? suffix : '(no summary available)'}`;
 }
 
-export function createCompactionSummaryMessage(text: string): ContextMessage {
+export function createCompactionSummaryMessage(
+  text: string,
+  role: 'assistant' | 'system' = 'assistant',
+): ContextMessage {
   return {
-    role: 'user',
+    role,
     content: [{ type: 'text', text }],
     toolCalls: [],
     origin: { kind: 'compaction_summary' },
+  };
+}
+
+export const COMPACTION_CONTINUE_VARIANT = 'compaction_continue';
+
+export const COMPACTION_CONTINUE_TEXT =
+  'Compaction complete. The assistant message above is your own summary of the compacted conversation; the user messages before it are verbatim. Continue the task from here.';
+
+export function createCompactionContinueMessage(): ContextMessage {
+  return {
+    role: 'system',
+    content: [{ type: 'text', text: COMPACTION_CONTINUE_TEXT }],
+    toolCalls: [],
+    origin: { kind: 'injection', variant: COMPACTION_CONTINUE_VARIANT },
   };
 }
 

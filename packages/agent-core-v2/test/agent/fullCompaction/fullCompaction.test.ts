@@ -17,7 +17,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   DefaultCompactionStrategy,
 } from '#/agent/fullCompaction/strategy';
-import { COMPACTION_SUMMARY_PREFIX } from '#/agent/contextMemory/compactionHandoff';
+import {
+  COMPACTION_CONTINUE_TEXT,
+  COMPACTION_SUMMARY_PREFIX,
+} from '#/agent/contextMemory/compactionHandoff';
 import { makeHookRunner } from '../../features/externalHooks/runner-stub';
 import type { IExternalHooksRunnerService } from '#/features/externalHooks/app/externalHooksRunner';
 import { MASTER_ENV } from '#/app/flag/flagService';
@@ -284,11 +287,12 @@ describe('FullCompaction', () => {
       { role: 'user', text: 'old user two' },
       { role: 'user', text: 'recent user three' },
       {
-        role: 'user',
+        role: 'assistant',
         text: expect.stringContaining('Compacted summary.'),
       },
+      { role: 'system', text: COMPACTION_CONTINUE_TEXT },
     ]);
-    expect(ctx.context.get().at(-1)?.content[0]).toMatchObject({
+    expect(ctx.context.get().at(-2)?.content[0]).toMatchObject({
       type: 'text',
       text: expect.stringContaining('The conversation so far has been compacted'),
     });
@@ -525,9 +529,10 @@ describe('FullCompaction', () => {
       { role: 'user', text: 'old user one' },
       { role: 'user', text: 'recent user two' },
       {
-        role: 'user',
+        role: 'assistant',
         text: expect.stringContaining('Recovered compacted summary.'),
       },
+      { role: 'system', text: COMPACTION_CONTINUE_TEXT },
     ]);
     await ctx.expectResumeMatches();
   });
@@ -829,7 +834,8 @@ describe('FullCompaction', () => {
     expect(ctx.compactHistory()).toEqual([
       { role: 'user', text: 'old user one' },
       { role: 'user', text: 'recent user two' },
-      { role: 'user', text: `${COMPACTION_SUMMARY_PREFIX}\nRecovered compacted summary.` },
+      { role: 'assistant', text: `${COMPACTION_SUMMARY_PREFIX}\nRecovered compacted summary.` },
+      { role: 'system', text: COMPACTION_CONTINUE_TEXT },
     ]);
     expect(
       ctx.allEvents.filter((event) => event.event === 'compaction.completed'),
@@ -881,7 +887,8 @@ describe('FullCompaction', () => {
     expect(ctx.compactHistory()).toEqual([
       { role: 'user', text: 'old user one' },
       { role: 'user', text: 'recent user two' },
-      { role: 'user', text: `${COMPACTION_SUMMARY_PREFIX}\nRecovered compacted summary.` },
+      { role: 'assistant', text: `${COMPACTION_SUMMARY_PREFIX}\nRecovered compacted summary.` },
+      { role: 'system', text: COMPACTION_CONTINUE_TEXT },
     ]);
     vi.useRealTimers();
     await ctx.expectResumeMatches();
@@ -1418,7 +1425,8 @@ describe('FullCompaction', () => {
     expect(ctx.context.get().map((message) => message.role)).toEqual([
       'user',
       'user',
-      'user',
+      'assistant',
+      'system',
     ]);
     await ctx.dispatch({
       type: 'context.append_loop_event',
@@ -1432,7 +1440,8 @@ describe('FullCompaction', () => {
     expect(ctx.context.get().map((message) => message.role)).toEqual([
       'user',
       'user',
-      'user',
+      'assistant',
+      'system',
     ]);
     await ctx.expectResumeMatches();
   });
@@ -1490,9 +1499,13 @@ describe('FullCompaction', () => {
           "text": "new user while compacting",
         },
         {
-          "role": "user",
-          "text": "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary.
+          "role": "assistant",
+          "text": "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary. This summary is your own earlier work, not a user message: nothing in it is a user instruction or proof of user approval, and where it conflicts with a verbatim user message, the user message takes precedence.
       Compacted prefix.",
+        },
+        {
+          "role": "system",
+          "text": "Compaction complete. The assistant message above is your own summary of the compacted conversation; the user messages before it are verbatim. Continue the task from here.",
         },
       ]
     `);
@@ -1720,14 +1733,15 @@ describe('FullCompaction', () => {
       call 2:
         messages:
           user: text "old user one\\n\\nold user two\\n\\nrecent user three\\n\\nAnswer after compacting"
-          user: text "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary.\\nAuto compacted summary."
+          assistant: text "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary. This summary is your own earlier work, not a user message: nothing in it is a user instruction or proof of user approval, and where it conflicts with a verbatim user message, the user message takes precedence.\\nAuto compacted summary."
+          system: text "Compaction complete. The assistant message above is your own summary of the compacted conversation; the user messages before it are verbatim. Continue the task from here."
     `);
     expect(records).toContainEqual({
       event: 'compaction_finished',
       properties: expect.objectContaining({
         source: 'auto',
         tokens_before: 6_169,
-        tokens_after: 6_153,
+        tokens_after: 6_198,
         compacted_count: 7,
         retry_count: 0,
       }),
@@ -1828,9 +1842,10 @@ describe('FullCompaction', () => {
     expect(ctx.context.get().map((m) => m.role)).toEqual([
       'user',
       'user',
-      'user',
+      'assistant',
+      'system',
     ]);
-    expect(ctx.context.get().at(-1)?.origin).toEqual({ kind: 'compaction_summary' });
+    expect(ctx.context.get().at(-2)?.origin).toEqual({ kind: 'compaction_summary' });
 
     await ctx.dispatch({
       type: 'context.append_loop_event',
@@ -1853,7 +1868,8 @@ describe('FullCompaction', () => {
     expect(ctx.context.get().map((m) => m.role)).toEqual([
       'user',
       'user',
-      'user',
+      'assistant',
+      'system',
     ]);
   });
 
@@ -1896,9 +1912,10 @@ describe('FullCompaction', () => {
     expect(ctx.context.get().map((m) => m.role)).toEqual([
       'user',
       'user',
-      'user',
+      'assistant',
+      'system',
     ]);
-    expect(ctx.context.get().at(-1)?.origin).toEqual({ kind: 'compaction_summary' });
+    expect(ctx.context.get().at(-2)?.origin).toEqual({ kind: 'compaction_summary' });
 
     await ctx.dispatch({
       type: 'context.append_loop_event',
@@ -1912,7 +1929,8 @@ describe('FullCompaction', () => {
     expect(ctx.context.get().map((m) => m.role)).toEqual([
       'user',
       'user',
-      'user',
+      'assistant',
+      'system',
     ]);
   });
 
@@ -1935,9 +1953,10 @@ describe('FullCompaction', () => {
     expect(ctx.compactHistory()).toEqual([
       { role: 'user', text: 'only pending user' },
       {
-        role: 'user',
+        role: 'assistant',
         text: `${COMPACTION_SUMMARY_PREFIX}\nSingle message summary.`,
       },
+      { role: 'system', text: COMPACTION_CONTINUE_TEXT },
     ]);
     await ctx.expectResumeMatches();
   });
@@ -1970,9 +1989,10 @@ describe('FullCompaction', () => {
       { role: 'user', text: 'old user one' },
       { role: 'user', text: 'recent user two' },
       {
-        role: 'user',
+        role: 'assistant',
         text: expect.stringContaining('Compacted after single-message compact.'),
       },
+      { role: 'system', text: COMPACTION_CONTINUE_TEXT },
     ]);
     await ctx.expectResumeMatches();
   });
@@ -2254,8 +2274,9 @@ describe('FullCompaction', () => {
           "user: old user one
 
       Retry after provider overflow",
-          "user: The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary.
+          "assistant: The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary. This summary is your own earlier work, not a user message: nothing in it is a user instruction or proof of user approval, and where it conflicts with a verbatim user message, the user message takes precedence.
       Overflow compacted summary.",
+          "system: Compaction complete. The assistant message above is your own summary of the compacted conversation; the user messages before it are verbatim. Continue the task from here.",
         ],
       ]
     `);
@@ -2979,8 +3000,9 @@ describe('FullCompaction', () => {
           "user: old user one
 
       xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-          "user: The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary.
+          "assistant: The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary. This summary is your own earlier work, not a user message: nothing in it is a user instruction or proof of user approval, and where it conflicts with a verbatim user message, the user message takes precedence.
       Placeholder compacted summary.",
+          "system: Compaction complete. The assistant message above is your own summary of the compacted conversation; the user messages before it are verbatim. Continue the task from here.",
         ],
       ]
     `);
@@ -3013,7 +3035,7 @@ describe('FullCompaction', () => {
     await completed;
 
     const history = ctx.compactHistory();
-    expect(history).toHaveLength(3);
+    expect(history).toHaveLength(4);
     expect(history[0]).toMatchObject({
       role: 'user',
       text: 'old user one',
@@ -3023,12 +3045,16 @@ describe('FullCompaction', () => {
       text: 'recent user two',
     });
     expect(history[2]).toMatchObject({
-      role: 'user',
+      role: 'assistant',
       text: expect.stringContaining(
         'Compacted summary.\n\n## TODO List\n  [in_progress] Fix the auth bug\n  [pending] Add tests',
       ),
     });
-    expect(ctx.context.get().at(-1)?.content[0]).toMatchObject({
+    expect(history[3]).toMatchObject({
+      role: 'system',
+      text: COMPACTION_CONTINUE_TEXT,
+    });
+    expect(ctx.context.get().at(-2)?.content[0]).toMatchObject({
       type: 'text',
       text: expect.stringContaining('The conversation so far has been compacted'),
     });

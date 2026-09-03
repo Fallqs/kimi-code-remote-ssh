@@ -4,8 +4,10 @@
  *
  * Strict providers (Anthropic, Gemini/Vertex) reject consecutive user turns with
  * HTTP 400 ("roles must alternate"). Consecutive user turns arise naturally:
- *   - after compaction, whose shape is `[kept user prompts, user-role summary,
- *     injected reminders]` — all role 'user'; and
+ *   - after compaction, whose shape is `[kept user prompts, assistant-role
+ *     summary, system-role continue reminder]` — the kept prompts and any
+ *     user-role injected reminders share role 'user', and the reminder
+ *     converts to a `<system>`-tagged user turn at this boundary; and
  *   - when a user turn (steer/injection) follows a tool result.
  *
  * Both only become visible once tool messages have been converted to user-role

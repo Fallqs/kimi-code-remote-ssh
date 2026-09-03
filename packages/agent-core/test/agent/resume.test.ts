@@ -5,6 +5,7 @@ import { join } from 'pathe';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { AgentRecord } from '../../src/agent';
+import { COMPACTION_CONTINUE_TEXT } from '../../src/agent/compaction/handoff';
 import type { PromptOrigin } from '../../src/agent/context';
 import {
   AGENT_WIRE_PROTOCOL_VERSION,
@@ -83,7 +84,8 @@ describe('Agent resume', () => {
         tools: Bash
         messages:
           user: text "Historical prompt"
-          user: text "Historical compacted summary."
+          assistant: text "Historical compacted summary."
+          system: text "Compaction complete. The assistant message above is your own summary of the compacted conversation; the user messages before it are verbatim. Continue the task from here."
           user: text "Fresh prompt after resume"
           user: text <plan-mode-reminder>
     `);
@@ -363,9 +365,14 @@ describe('Agent resume', () => {
         content: [{ type: 'text', text: 'Historical prompt before compaction' }],
       }),
       expect.objectContaining({
-        role: 'user',
+        role: 'assistant',
         content: [{ type: 'text', text: 'Compacted implementation notes.' }],
         origin: { kind: 'compaction_summary' },
+      }),
+      expect.objectContaining({
+        role: 'system',
+        content: [{ type: 'text', text: COMPACTION_CONTINUE_TEXT }],
+        origin: { kind: 'injection', variant: 'compaction_continue' },
       }),
     ]);
     expect(ctx.agent.replayBuilder.buildResult()).toEqual([

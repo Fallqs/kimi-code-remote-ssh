@@ -1,15 +1,16 @@
 import type { ContentPart } from '@moonshot-ai/kosong';
 import { estimateTokensForMessage } from '../../utils/tokens';
-import type { PromptOrigin } from '../context/types';
+import type { ContextMessage, PromptOrigin } from '../context/types';
 import summaryPrefixTemplate from './compaction-summary-prefix.md?raw';
 
 /**
  * Compaction handoff helpers.
  *
  * Compaction rewrites the model context as: the kept user messages (verbatim,
- * within a token budget) followed by a single user-role summary that is
- * prefixed with `COMPACTION_SUMMARY_PREFIX`. When the user messages exceed the
- * budget, the kept set is a HEAD segment (the oldest
+ * within a token budget) followed by a single assistant-role summary that is
+ * prefixed with `COMPACTION_SUMMARY_PREFIX`, plus a system-role continue
+ * reminder so the summary never sits at the history tail. When the user
+ * messages exceed the budget, the kept set is a HEAD segment (the oldest
  * `COMPACT_USER_MESSAGE_HEAD_TOKENS`) plus a TAIL segment (the most recent
  * remainder of the budget), with a user-invisible elision marker between them
  * telling the model what was omitted. Assistant messages, tool calls, and tool
@@ -34,6 +35,30 @@ export const COMPACT_USER_MESSAGE_HEAD_TOKENS = 2_000;
  * stack or get re-summarized) and are skipped on replay/transcript rendering.
  */
 export const COMPACTION_ELISION_VARIANT = 'compaction_elision';
+
+/**
+ * `InjectionOrigin.variant` of the continue reminder appended after the
+ * compaction summary, so the rebuilt history never ends on the assistant-role
+ * summary itself — a trailing assistant message would be treated as a prefill
+ * by Anthropic-style providers. The reminder is system-role, so providers
+ * either pass it through as harness context or wrap it as a tagged `<system>`
+ * user turn, and its injection origin makes it droppable at the next
+ * compaction and invisible to undo/transcript turn grouping.
+ */
+export const COMPACTION_CONTINUE_VARIANT = 'compaction_continue';
+
+export const COMPACTION_CONTINUE_TEXT =
+  'Compaction complete. The assistant message above is your own summary of the compacted ' +
+  'conversation; the user messages before it are verbatim. Continue the task from here.';
+
+export function createCompactionContinueMessage(): ContextMessage {
+  return {
+    role: 'system',
+    content: [{ type: 'text', text: COMPACTION_CONTINUE_TEXT }],
+    toolCalls: [],
+    origin: { kind: 'injection', variant: COMPACTION_CONTINUE_VARIANT },
+  };
+}
 
 /**
  * Structural subset of kosong's `Message` that the handoff helpers inspect.

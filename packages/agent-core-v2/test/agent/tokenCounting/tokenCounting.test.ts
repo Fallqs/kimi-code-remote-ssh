@@ -131,7 +131,9 @@ describe('Agent token counting', () => {
     });
 
     const history = context.get();
-    const kept = estimateTokensForMessages(history.filter((m) => m.origin?.kind === 'user'));
+    const kept = estimateTokensForMessages(
+      history.filter((m) => m.origin?.kind === 'user' || m.origin?.kind === 'injection'),
+    );
     const expected = 500 + kept;
     expect(tokenCountingState(ctx).anchors).toEqual([
       { length: history.length, tokens: expected, measured: false },

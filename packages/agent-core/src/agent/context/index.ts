@@ -8,9 +8,11 @@ import { estimateTokens, estimateTokensForMessages } from '../../utils/tokens';
 import { escapeXml, escapeXmlAttr } from '../../utils/xml-escape';
 import {
   COMPACT_USER_MESSAGE_MAX_TOKENS,
+  COMPACTION_CONTINUE_TEXT,
   COMPACTION_ELISION_VARIANT,
   buildCompactionElisionText,
   collectCompactableUserMessages,
+  createCompactionContinueMessage,
   isRealUserInput,
   selectCompactionUserMessages,
   selectRecentUserMessages,
@@ -315,7 +317,11 @@ export class ContextMemory {
     // Single derivation point for the post-compaction shape: the kept user
     // messages (verbatim, within the token budget — the oldest head plus the
     // most recent tail, with an elision marker between them when the pool
-    // overflowed), followed by a user-role summary. `tokensAfter` and the
+    // overflowed), followed by an assistant-role summary (marked with the
+    // `compaction_summary` origin so the model does not mistake it for user
+    // input) and a system-role continue reminder (so the summary never sits at
+    // the tail, where Anthropic-style providers would treat an assistant
+    // message as a prefill). `tokensAfter` and the
     // kept-count fields are derived here from the actual `_history` so the
     // live context, the wire record, and the transcript reducer all agree —
     // re-deriving them elsewhere (e.g. from the full transcript, which still
@@ -355,9 +361,12 @@ export class ContextMemory {
     // are preserved verbatim. Older wire records did not have `contextSummary`,
     // so their `summary` remains the model-context text during restore.
     const contextSummary = input.contextSummary ?? input.summary;
+    const continueMessage = createCompactionContinueMessage();
     const tokensAfter =
       input.tokensAfter ??
-      estimateTokens(contextSummary) + estimateTokensForMessages(keptMessages);
+      estimateTokens(contextSummary) +
+        estimateTokens(COMPACTION_CONTINUE_TEXT) +
+        estimateTokensForMessages(keptMessages);
     const keptUserMessageCount =
       input.keptUserMessageCount ?? selection.head.length + selection.tail.length;
     const keptHeadUserMessageCount =
@@ -388,12 +397,6 @@ export class ContextMemory {
         droppedCount: result.droppedCount,
       },
     });
-    const summaryMessage: ContextMessage = {
-      role: 'user',
-      content: [{ type: 'text', text: contextSummary }],
-      toolCalls: [],
-      origin: { kind: 'compaction_summary' },
-    };
     // Wire backward-compat: a pre-rework `context.apply_compaction` record (which
     // has no `keptUserMessageCount`) used `[summary, ...history.slice(compactedCount)]`
     // semantics and kept a verbatim recent tail. Reproduce that shape on restore
@@ -412,9 +415,22 @@ export class ContextMemory {
       this.agent.records.restoring !== null &&
       input.keptUserMessageCount === undefined &&
       input.compactedCount < this._history.length;
+    // A summary that would lead the rebuilt history (legacy restores, or the
+    // degenerate case where no user message survives) stays system-role:
+    // strict providers reject a non-user first turn, and their system
+    // messages convert to a tagged `<system>` user turn at the provider
+    // boundary. Otherwise the kept user messages lead and the summary speaks
+    // with the assistant's own voice — it is the model's own notes, not user
+    // input.
+    const summaryMessage: ContextMessage = {
+      role: isLegacyRestore || keptMessages.length === 0 ? 'system' : 'assistant',
+      content: [{ type: 'text', text: contextSummary }],
+      toolCalls: [],
+      origin: { kind: 'compaction_summary' },
+    };
     this._history = isLegacyRestore
-      ? [summaryMessage, ...this._history.slice(input.compactedCount)]
-      : [...keptMessages, summaryMessage];
+      ? [summaryMessage, ...this._history.slice(input.compactedCount), continueMessage]
+      : [...keptMessages, summaryMessage, continueMessage];
     this.openSteps.clear();
     this.pendingToolResultIds.clear();
     // Drop deferred messages (mostly injections/system reminders) instead of

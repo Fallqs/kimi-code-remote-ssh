@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { COMPACTION_CONTINUE_TEXT } from '#/agent/contextMemory/compactionHandoff';
 import {
   applyContextCompactionRecord,
   computeUndoCut,
@@ -86,7 +87,7 @@ describe('reduceContextTranscript', () => {
     expect(result.foldedLength).toBe(2);
   });
 
-  it('compaction keeps the prefix and appends a user-role summary marker', () => {
+  it('compaction keeps the prefix and appends a system-role summary marker for legacy records', () => {
     const result = reduceContextTranscript([
       appendMessage(userMessage('u1')),
       ...assistantStep('s1', 'a1'),
@@ -95,10 +96,15 @@ describe('reduceContextTranscript', () => {
       compaction('SUM', 4),
       appendMessage(userMessage('u3')),
     ]);
-    expect(texts(result)).toEqual(['u1', 'a1', 'u2', 'a2', 'SUM', 'u3']);
+    expect(texts(result)).toEqual(['u1', 'a1', 'u2', 'a2', 'SUM', COMPACTION_CONTINUE_TEXT, 'u3']);
     expect(result.entries[4]!.origin).toEqual({ kind: 'compaction_summary' });
-    expect(result.entries[4]!.role).toBe('user');
-    expect(result.foldedLength).toBe(4);
+    expect(result.entries[4]!.role).toBe('system');
+    expect(result.entries[5]!.role).toBe('system');
+    expect(result.entries[5]!.origin).toEqual({
+      kind: 'injection',
+      variant: 'compaction_continue',
+    });
+    expect(result.foldedLength).toBe(5);
   });
 
   it('uses the recorded kept-user count for foldedLength when present', () => {
@@ -109,7 +115,8 @@ describe('reduceContextTranscript', () => {
       compaction('SUM', 3, 1),
       appendMessage(userMessage('u4')),
     ]);
-    expect(result.foldedLength).toBe(3);
+    expect(result.entries[3]!.role).toBe('assistant');
+    expect(result.foldedLength).toBe(4);
   });
 
   it('accounts for the elision marker when the record kept a head segment', () => {
@@ -119,7 +126,7 @@ describe('reduceContextTranscript', () => {
       ...assistantStep('s1', 'a1'),
       compaction('SUM', 3, 2, 1),
     ]);
-    expect(result.foldedLength).toBe(4);
+    expect(result.foldedLength).toBe(5);
   });
 
   it('carries the originating wire record time per entry', () => {
@@ -157,9 +164,19 @@ describe('reduceContextTranscript', () => {
       appendMessage(assistantMessage('reply B')),
       undo(1),
     ]);
-    expect(texts(result)).toEqual(['message A', 'reply A', 'summary text']);
-    expect(result.entries.map((m) => m.role)).toEqual(['user', 'assistant', 'user']);
-    expect(result.foldedLength).toBe(2);
+    expect(texts(result)).toEqual([
+      'message A',
+      'reply A',
+      'summary text',
+      COMPACTION_CONTINUE_TEXT,
+    ]);
+    expect(result.entries.map((m) => m.role)).toEqual([
+      'user',
+      'assistant',
+      'assistant',
+      'system',
+    ]);
+    expect(result.foldedLength).toBe(3);
   });
 
   it('undo without compaction keeps the earlier exchange intact', () => {
@@ -200,7 +217,7 @@ describe('reduceContextTranscript', () => {
       appendMessage(assistantMessage('answer')),
       undo(2),
     ]);
-    expect(texts(result)).toEqual(['old', 'SUM']);
+    expect(texts(result)).toEqual(['old', 'SUM', COMPACTION_CONTINUE_TEXT]);
   });
 
   it('clear keeps prior transcript entries but resets the folded view', () => {
@@ -388,7 +405,7 @@ describe('live fold parity', () => {
     ];
     const live = foldLive(records);
     const transcript = reduceContextTranscript(records);
-    expect(live).toHaveLength(5);
+    expect(live).toHaveLength(6);
     expect(transcript.foldedLength).toBe(live.length);
     expect(live[2]!.origin).toEqual({ kind: 'compaction_summary' });
   });
@@ -403,8 +420,8 @@ describe('live fold parity', () => {
     ];
     const live = foldLive(records);
     const transcript = reduceContextTranscript(records);
-    expect(live.map((m) => m.role)).toEqual(['user', 'user', 'assistant']);
-    expect(texts(transcript)).toEqual(['u1', 'a1', 'SUM', 'a3']);
+    expect(live.map((m) => m.role)).toEqual(['user', 'assistant', 'system', 'assistant']);
+    expect(texts(transcript)).toEqual(['u1', 'a1', 'SUM', COMPACTION_CONTINUE_TEXT, 'a3']);
     expect(transcript.foldedLength).toBe(live.length);
   });
 
@@ -422,7 +439,8 @@ describe('live fold parity', () => {
       'user',
       'assistant',
       'tool',
-      'user',
+      'assistant',
+      'system',
       'assistant',
     ]);
     expect(transcript.entries[2]!.toolCallId).toBe('c1');
@@ -440,13 +458,20 @@ describe('live fold parity', () => {
     ];
     const live = foldLive(records);
     const transcript = reduceContextTranscript(records);
-    expect(live.map((m) => m.role)).toEqual(['user', 'assistant', 'assistant', 'assistant']);
+    expect(live.map((m) => m.role)).toEqual([
+      'system',
+      'assistant',
+      'assistant',
+      'system',
+      'assistant',
+    ]);
     expect(live[2]!.partial).toBe(true);
     expect(transcript.entries.map((m) => m.role)).toEqual([
       'user',
       'assistant',
       'assistant',
-      'user',
+      'system',
+      'system',
       'assistant',
     ]);
     expect(transcript.foldedLength).toBe(live.length);

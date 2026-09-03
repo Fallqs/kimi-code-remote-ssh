@@ -188,7 +188,7 @@ describe('AgentConversationUndoService', () => {
 
     await undo.undo(1);
     const history = ctx.context.get();
-    expect(history.map((m) => m.role)).toEqual(['user', 'user']);
+    expect(history.map((m) => m.role)).toEqual(['user', 'assistant', 'system']);
     expect(history[1]?.origin?.kind).toBe('compaction_summary');
   });
 
@@ -200,13 +200,23 @@ describe('AgentConversationUndoService', () => {
     await ctx.dispatcher.dispatch(
       new ContextApplyCompaction({ agentId: 'main', summary: 'legacy summary', compactedCount: 2 }),
     );
-    expect(ctx.context.get().map((m) => m.role)).toEqual(['user', 'user', 'assistant']);
+    expect(ctx.context.get().map((m) => m.role)).toEqual([
+      'system',
+      'user',
+      'assistant',
+      'system',
+    ]);
 
     await expect(undo.undo(1)).rejects.toMatchObject({
       code: ErrorCodes.SESSION_UNDO_UNAVAILABLE,
       details: { reason: 'compaction_boundary', requestedCount: 1, undoableCount: 0 },
     });
-    expect(ctx.context.get().map((m) => m.role)).toEqual(['user', 'user', 'assistant']);
+    expect(ctx.context.get().map((m) => m.role)).toEqual([
+      'system',
+      'user',
+      'assistant',
+      'system',
+    ]);
   });
 
   it('attributes a checkpoint depth failure to the limiting model', async () => {
