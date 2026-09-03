@@ -15,7 +15,10 @@
  * recovers — after a successful background reconnect the client sits in
  * `blocked` and every call fails fast with {@link RemoteBlockedError} until
  * the caller explicitly `resume()`s (OQ-R3: an interrupted command is never
- * silently glossed over).
+ * silently glossed over). A call that arrives while the pipe is down
+ * (`disconnected` / `reconnecting`) triggers one on-demand reconnect
+ * (single-flight with any background attempt) and proceeds when it
+ * succeeds, instead of failing fast with a connection error.
  */
 
 import { type ChildProcess, spawn } from 'node:child_process';
@@ -150,6 +153,7 @@ export class SshPipeClient {
   private _closing = false;
   private _reconnectAttempt = 0;
   private _reconnectTimer: NodeJS.Timeout | undefined;
+  private _inflightReconnect: Promise<void> | undefined;
 
   private constructor(spec: SshWorkDirSpec | string, options?: SshPipeOptions) {
     this._spec = typeof spec === 'string' ? parseSshWorkDirSpec(spec) : spec;
@@ -188,7 +192,7 @@ export class SshPipeClient {
         this._lastExecResult = result;
       },
     });
-    this.fs = new RtsFs((op, params) => this._requireReady().call(op, params));
+    this.fs = new RtsFs(async (op, params) => (await this._readyClient()).call(op, params));
   }
 
   /**
@@ -225,12 +229,12 @@ export class SshPipeClient {
   async call<O extends OpName>(op: O, params: OpParams[O]): Promise<OpResults[O]>;
   async call<T = unknown>(op: string, params: Record<string, unknown>): Promise<T>;
   async call(op: string, params: object): Promise<unknown> {
-    return this._requireReady().call(op, params as Record<string, unknown>);
+    return (await this._readyClient()).call(op, params as Record<string, unknown>);
   }
 
   /** Spawn a remote process over the pipe; gated like {@link call}. */
   async spawn(params: ProcSpawnParams): Promise<RtsClientProcess> {
-    return this._requireReady().spawn(params);
+    return (await this._readyClient()).spawn(params);
   }
 
   /**
@@ -426,8 +430,24 @@ export class SshPipeClient {
     }, delay);
   }
 
-  /** One probe + redeploy-if-stale + pipe attempt; success lands in `blocked`. */
-  private async _reconnectOnce(): Promise<void> {
+  /**
+   * Single-flight probe + redeploy-if-stale + pipe attempt; success lands in
+   * `blocked`. Concurrent callers (the backoff timer and on-demand call
+   * retries) share the same attempt.
+   */
+  private _reconnectOnce(): Promise<void> {
+    if (this._inflightReconnect !== undefined) return this._inflightReconnect;
+    const attempt = this._attemptReconnect();
+    this._inflightReconnect = attempt;
+    void attempt.finally(() => {
+      if (this._inflightReconnect === attempt) {
+        this._inflightReconnect = undefined;
+      }
+    });
+    return attempt;
+  }
+
+  private async _attemptReconnect(): Promise<void> {
     if (this._closing) return;
     this._setState('reconnecting');
     try {
@@ -483,6 +503,32 @@ export class SshPipeClient {
   }
 
   // ── state helpers ────────────────────────────────────────────────────
+
+  /**
+   * Gate every remote op: ready passes through; a down pipe
+   * (`disconnected` / `reconnecting`) gets one on-demand reconnect —
+   * cancelling any pending backoff timer — and the op proceeds when the
+   * reconnect succeeds. `blocked` and `closed` keep failing fast.
+   */
+  private async _readyClient(): Promise<RtsClient> {
+    if (this._state === 'ready' && this._client !== undefined) {
+      return this._client;
+    }
+    if (this._state === 'disconnected' || this._state === 'reconnecting') {
+      if (this._reconnectTimer !== undefined) {
+        clearTimeout(this._reconnectTimer);
+        this._reconnectTimer = undefined;
+      }
+      await this._reconnectOnce();
+      // The cast defeats control-flow narrowing: the reconnect mutates
+      // `_state` across the await above.
+      const state = this._state as SshPipeState;
+      if (state === 'blocked') {
+        await this.resume();
+      }
+    }
+    return this._requireReady();
+  }
 
   /** Gate every remote op on `ready`; anything else fails fast. */
   private _requireReady(): RtsClient {

@@ -501,7 +501,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     try {
       await this.execFs.remove(remoteSessionDir(this.execHomeDir, sessionId));
     } catch (error) {
-      this.telemetry.withContext({ sessionId }).track2('session_remote_gc_failed', {
+      this.telemetry.withContext({ session_id: sessionId }).track2('session_remote_gc_failed', {
         reason: isError2(error) ? error.code : error instanceof Error ? error.name : 'unknown',
       });
     }

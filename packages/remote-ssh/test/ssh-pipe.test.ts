@@ -461,6 +461,79 @@ describe('SshPipeClient over fake ssh', () => {
     await expect(client.resume()).rejects.toThrowError(/blocked state/);
   });
 
+  it('a call made while disconnected reconnects once on demand instead of failing fast', async () => {
+    const states: SshPipeState[] = [];
+    const client = await SshPipeClient.connect(
+      'ssh://fakehost/tmp/x',
+      fakeOptions({
+        // The long backoff keeps the background reconnect pending; the
+        // on-demand path must cancel that timer and reconnect immediately.
+        reconnectBackoffMs: [60_000],
+        onStateChange: state => {
+          states.push(state);
+        },
+      }),
+    );
+
+    const workDir = await makeTempDir();
+    try {
+      const file = join(workDir, 'survives-loss.txt');
+      await client.fs.writeText(file, 'still here');
+
+      // Kill the RTS server from inside a spawned remote process; the pipe
+      // drops and the client parks in disconnected with the timer pending.
+      const killer = await client.spawn({
+        cmd: process.execPath,
+        args: ['-e', 'setTimeout(() => process.kill(process.ppid, "SIGKILL"), 100)'],
+      });
+      void killer.wait().catch(() => {});
+      await waitForCondition(() => client.state === 'disconnected', 10_000);
+
+      // The next call reconnects once on demand and succeeds; the
+      // successful reconnect is auto-resumed for the calling op.
+      expect(await client.fs.readText(file)).toBe('still here');
+      expect(client.state).toBe('ready');
+      expect(states).toContain('reconnecting');
+      expect(states).toContain('blocked');
+      expect(deployCount()).toBe(1);
+      expect(pipeInvocations()).toHaveLength(2);
+    } finally {
+      await client.close();
+      await removeTempDir(workDir);
+    }
+  });
+
+  it('a call made while disconnected still rejects when the on-demand reconnect fails', async () => {
+    const client = await SshPipeClient.connect(
+      'ssh://fakehost/tmp/x',
+      fakeOptions({ reconnectBackoffMs: [60_000] }),
+    );
+    try {
+      const killer = await client.spawn({
+        cmd: process.execPath,
+        args: ['-e', 'setTimeout(() => process.kill(process.ppid, "SIGKILL"), 100)'],
+      });
+      void killer.wait().catch(() => {});
+      await waitForCondition(() => client.state === 'disconnected', 10_000);
+
+      // The reconnect probe now finds no usable node on the remote, so the
+      // single on-demand attempt fails and the call rejects with EBLOCKED.
+      process.env['FAKE_SSH_NO_NODE'] = '1';
+      const error: Error = await client.fs.exists('/x').then(
+        () => {
+          throw new Error('expected an EBLOCKED rejection');
+        },
+        (blockedError: Error) => blockedError,
+      );
+      expect(error).toBeInstanceOf(RemoteBlockedError);
+      expect((error as RemoteBlockedError).code).toBe('EBLOCKED');
+      expect(client.state).toBe('disconnected');
+    } finally {
+      delete process.env['FAKE_SSH_NO_NODE'];
+      await client.close();
+    }
+  });
+
   it('close() is idempotent and no reconnect happens after close', async () => {
     const client = await SshPipeClient.connect('ssh://fakehost/tmp/x', fakeOptions());
     await client.close();

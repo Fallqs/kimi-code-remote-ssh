@@ -356,6 +356,17 @@ describe('KimiHarness config API', () => {
         enabled: false,
         source: 'default',
       },
+      {
+        id: 'ssh-workdir',
+        title: 'SSH remote workspaces',
+        description:
+          'Allow ssh://[user@]host[:port]/path workspace roots: file and process operations run on the remote host over SSH while session persistence stays local.',
+        surface: 'both',
+        env: 'KIMI_CODE_EXPERIMENTAL_SSH_WORKDIR',
+        defaultEnabled: false,
+        enabled: false,
+        source: 'default',
+      },
     ]);
   });
 

@@ -44,9 +44,9 @@ With [`stateful`](../configuration/config-files.md#bash) enabled under `[bash]`,
 
 ## Interruptions and resuming
 
-If the SSH connection drops, in-flight remote processes are killed — the RTS dies with the pipe and kills its process groups — and subsequent tool calls fail fast with a clear interruption error. Interrupted commands are never silently retried.
+If the SSH connection drops, in-flight remote processes are killed — the RTS dies with the pipe and kills its process groups — and interrupted commands are never silently retried. A tool call that arrives while the connection is down triggers one reconnect attempt before running, and proceeds when that attempt succeeds instead of failing fast with a connection error.
 
-The CLI reconnects in the background, but the environment stays blocked until you resume manually: run `/resume-remote` in the TUI, or call `POST /api/v1/workspaces/{id}/ssh/resume` over the REST API (the current state is readable from `GET /api/v1/workspaces/{id}/ssh/state`). The explicit acknowledge step keeps a flaky network from restarting half-finished work without your knowledge.
+The CLI also reconnects in the background. When the background reconnect finishes first, the environment stays blocked until you resume manually: run `/resume-remote` in the TUI, or call `POST /api/v1/workspaces/{id}/ssh/resume` over the REST API (the current state is readable from `GET /api/v1/workspaces/{id}/ssh/state`). The explicit acknowledge step keeps a flaky network from restarting half-finished work without your knowledge.
 
 ## Limitations
 
