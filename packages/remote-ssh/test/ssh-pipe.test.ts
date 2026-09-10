@@ -535,7 +535,7 @@ describe('SshPipeClient over fake ssh', () => {
     }
   });
 
-  it('pipe loss rejects in-flight calls, reconnects into blocked, and resume() restores service', async () => {
+  it('pipe loss rejects in-flight calls, reconnects into blocked, and the next op silently resumes', async () => {
     // The fake delays server→client bytes by 500 ms, so the call below is
     // still in flight when the remote "crashes" 150 ms after starting.
     process.env['FAKE_SSH_STDOUT_DELAY_MS'] = '500';
@@ -575,24 +575,28 @@ describe('SshPipeClient over fake ssh', () => {
       expect(deployCount()).toBe(1);
       expect(pipeInvocations()).toHaveLength(2);
 
-      // Blocked: every op fails fast with EBLOCKED; nothing is glossed over.
-      const blockedAttempts: Array<() => Promise<unknown>> = [
-        () => client.call('fs.exists', { path: file }),
-        () => client.fs.exists(file),
-        () => client.spawn({ cmd: process.execPath, args: ['-e', ''] }),
-      ];
-      for (const attempt of blockedAttempts) {
-        const error: Error = await attempt().then(
-          () => {
-            throw new Error('expected an EBLOCKED rejection');
-          },
-          (blockedError: Error) => blockedError,
-        );
-        expect(error).toBeInstanceOf(RemoteBlockedError);
-        expect((error as RemoteBlockedError).code).toBe('EBLOCKED');
-      }
+      // Blocked: the next op silently resume()s — the op itself is the
+      // acknowledgment — and every op entry point proceeds on the
+      // re-established pipe.
+      expect(await client.call('fs.exists', { path: file })).toEqual({ exists: true });
+      expect(client.state).toBe('ready');
+      expect(await client.fs.exists(file)).toBe(true);
+      const proc = await client.spawn({ cmd: process.execPath, args: ['-e', ''] });
+      expect(await proc.wait()).toBe(0);
 
-      // resume() acknowledges the interruption and restores service.
+      // A second loss: an explicit resume() also acknowledges the
+      // interruption without running an op first. The killer's spawn reply
+      // may itself be lost to the 500 ms delay, so tolerate its rejection.
+      await client
+        .spawn({
+          cmd: process.execPath,
+          args: ['-e', 'setTimeout(() => process.kill(process.ppid, "SIGKILL"), 100)'],
+        })
+        .then(
+          proc => proc.wait().catch(() => {}),
+          () => {},
+        );
+      await waitForCondition(() => client.state === 'blocked', 10_000);
       await client.resume();
       expect(client.state).toBe('ready');
       expect(await client.fs.readText(file)).toBe('before loss');

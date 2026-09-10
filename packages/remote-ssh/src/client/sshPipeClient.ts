@@ -11,13 +11,13 @@
  * host-key/password prompts ever hang the pipe); ssh stderr is captured and
  * surfaced verbatim in connection errors.
  *
- * State machine (`SshPipeState`): an unexpected pipe loss never silently
- * recovers — after a successful background reconnect the client sits in
- * `blocked` and every call fails fast with {@link RemoteBlockedError} until
- * the caller explicitly `resume()`s (OQ-R3: an interrupted command is never
- * silently glossed over). A call that arrives while the pipe is down
- * (`disconnected` / `reconnecting`) triggers one on-demand reconnect
- * (single-flight with any background attempt) and proceeds when it
+ * State machine (`SshPipeState`): an unexpected pipe loss is acknowledged at
+ * the next remote op — after a successful background reconnect the client
+ * sits in `blocked`, and the next call silently `resume()`s before running
+ * (the call itself is the acknowledgment; an explicit `resume()` remains for
+ * acknowledging from a UI without running an op). A call that arrives while
+ * the pipe is down (`disconnected` / `reconnecting`) triggers one on-demand
+ * reconnect (single-flight with any background attempt) and proceeds when it
  * succeeds, instead of failing fast with a connection error.
  */
 
@@ -65,7 +65,7 @@ export type SshPipeState =
   | 'ready'
   /** A background reconnect attempt (probe + redeploy-if-stale + pipe) is in flight. */
   | 'reconnecting'
-  /** Reconnected after a loss; calls stay rejected until `resume()`. */
+  /** Reconnected after a loss; the next call silently `resume()`s before running. */
   | 'blocked'
   /** `close()` ran (or the initial connect failed); terminal. */
   | 'closed';
@@ -552,14 +552,18 @@ export class SshPipeClient {
   // ── state helpers ────────────────────────────────────────────────────
 
   /**
-   * Gate every remote op: ready passes through; a down pipe
+   * Gate every remote op: ready passes through; `blocked` (reconnected,
+   * acknowledgment pending) is silently `resume()`d; a down pipe
    * (`disconnected` / `reconnecting`) gets one on-demand reconnect —
    * cancelling any pending backoff timer — and the op proceeds when the
-   * reconnect succeeds. `blocked` and `closed` keep failing fast.
+   * reconnect succeeds. Only `closed` and a failed reconnect keep failing.
    */
   private async _readyClient(): Promise<RtsClient> {
     if (this._state === 'ready' && this._client !== undefined) {
       return this._client;
+    }
+    if (this._state === 'blocked') {
+      await this.resume();
     }
     if (this._state === 'disconnected' || this._state === 'reconnecting') {
       if (this._reconnectTimer !== undefined) {

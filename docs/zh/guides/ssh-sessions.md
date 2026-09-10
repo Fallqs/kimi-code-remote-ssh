@@ -48,7 +48,7 @@ CLI 始终以 `BatchMode=yes` 运行 ssh，禁止任何交互式提示：在 Kim
 
 如果 SSH 连接断开，正在执行的远程进程会被杀死——RTS 随管道一同退出并终止其进程组——被中断的命令绝不会被静默重试。在连接断开期间发起的工具调用会先尝试一次重连，重连成功后继续执行，而不是立即抛出连接错误。
 
-CLI 也会在后台重新连接。如果后台重连先完成，环境会保持阻塞状态，直到你手动恢复：在 TUI 中运行 `/resume-remote`，或通过 REST API 调用 `POST /api/v1/workspaces/{id}/ssh/resume`（当前状态可从 `GET /api/v1/workspaces/{id}/ssh/state` 读取）。显式的确认步骤可以防止不稳定的网络在你不知情的情况下重启未完成的工作。
+CLI 也会在后台重新连接。重新建立的管道会先等待一次确认才继续承载调用，而下一个远程工具调用就算作这次确认——它会直接在新管道上执行而不是失败，因此 Agent 在网络抖动后重试时可以自行恢复。如果想在不发起工具调用的情况下显式确认，可以在 TUI 中运行 `/resume-remote`，或通过 REST API 调用 `POST /api/v1/workspaces/{id}/ssh/resume`（当前状态可从 `GET /api/v1/workspaces/{id}/ssh/state` 读取）。
 
 ## 当前限制
 

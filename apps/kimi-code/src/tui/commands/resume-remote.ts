@@ -1,10 +1,11 @@
 import type { SlashCommandHost } from './dispatch';
 
 /**
- * `/resume-remote` — the manual-resume affordance for ssh:// workspaces
- * (OQ-R3). An interrupted ssh pipe is re-established in the background but
- * stays `blocked` until the user acknowledges it here; every other state is
- * reported without action.
+ * `/resume-remote` — the manual-resume affordance for ssh:// workspaces. An
+ * interrupted ssh pipe is re-established in the background and sits
+ * `blocked` until acknowledged; the next remote tool call acknowledges it
+ * implicitly, and this command is the explicit acknowledgment for when no
+ * tool call is pending. Every other state is reported without action.
  */
 export async function handleResumeRemoteCommand(host: SlashCommandHost): Promise<void> {
   const workDir = host.state.appState.workDir;
