@@ -57,6 +57,7 @@ export async function createLinkedPair(options?: {
     input: clientToServer,
     output: serverToClient,
     cwd: options?.server?.cwd,
+    managedBinDir: options?.server?.managedBinDir,
     log: options?.server?.log,
     version: options?.server?.version,
   });

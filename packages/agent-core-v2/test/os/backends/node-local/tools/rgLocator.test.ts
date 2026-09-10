@@ -68,17 +68,42 @@ describe('findExistingRg', () => {
     expect(result).toBeUndefined();
   });
 
-  it('resolves from share-dir when cached', async () => {
+  it('resolves from share-dir when cached and the probe misses', async () => {
     const cached = join(fakeShare, 'bin', process.platform === 'win32' ? 'rg.exe' : 'rg');
     writeFileSync(cached, 'fake rg');
     const probe = noRgProbe();
     const result = await findExistingRg(probe, fakeShare);
 
     expect(result).toEqual({ path: cached, source: 'share-bin-cached' });
-    expect(probe.exec).not.toHaveBeenCalled();
+    expect(probe.exec).toHaveBeenCalledWith(['rg', '--version']);
   });
 
-  it('prefers system PATH over share-dir when both are available', async () => {
+  it('resolves the bare rg name when the spawn-environment probe succeeds', async () => {
+    const binDir = join(fakeShare, 'path-bin');
+    mkdirSync(binDir, { recursive: true });
+    const systemRg = join(binDir, process.platform === 'win32' ? 'rg.exe' : 'rg');
+    const cached = join(fakeShare, 'bin', process.platform === 'win32' ? 'rg.exe' : 'rg');
+    writeFileSync(systemRg, 'fake system rg');
+    writeFileSync(cached, 'fake cached rg');
+    process.env['PATH'] = binDir;
+    const probe = probeWith(() => 0);
+    const result = await findExistingRg(probe, fakeShare);
+
+    expect(result).toEqual({ path: 'rg', source: 'system-path' });
+    expect(probe.exec).toHaveBeenCalledTimes(1);
+    expect(probe.exec).toHaveBeenCalledWith(['rg', '--version']);
+  });
+
+  it('falls back to the local chain when the probe rejects', async () => {
+    const cached = join(fakeShare, 'bin', process.platform === 'win32' ? 'rg.exe' : 'rg');
+    writeFileSync(cached, 'fake rg');
+    const probe = { exec: vi.fn(() => Promise.reject(new Error('spawn failed'))) };
+    const result = await findExistingRg(probe, fakeShare);
+
+    expect(result).toEqual({ path: cached, source: 'share-bin-cached' });
+  });
+
+  it('prefers system PATH over share-dir when both are available and the probe misses', async () => {
     const binDir = join(fakeShare, 'path-bin');
     mkdirSync(binDir, { recursive: true });
     const systemRg = join(binDir, process.platform === 'win32' ? 'rg.exe' : 'rg');
@@ -90,7 +115,7 @@ describe('findExistingRg', () => {
     const result = await findExistingRg(probe, fakeShare);
 
     expect(result).toEqual({ path: systemRg, source: 'system-path' });
-    expect(probe.exec).not.toHaveBeenCalled();
+    expect(probe.exec).toHaveBeenCalledWith(['rg', '--version']);
   });
 });
 
@@ -144,6 +169,7 @@ describe('rgUnavailableMessage', () => {
     expect(msg).toContain('fetch failed');
     expect(msg).toContain('brew install ripgrep');
     expect(msg).toContain('https://github.com/BurntSushi/ripgrep');
+    expect(msg).toContain('install ripgrep on the remote host');
   });
 
   it('handles non-Error causes (string, unknown)', () => {
@@ -246,7 +272,7 @@ describe('ensureRgPath download branch', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('does not run probe subprocesses while lookup misses', async () => {
+  it('probes the spawn environment for rg before falling back to bootstrap', async () => {
     globalThis.fetch = vi.fn().mockRejectedValue(new Error('network unreachable')) as typeof fetch;
     const probe = noRgProbe();
 
@@ -254,7 +280,7 @@ describe('ensureRgPath download branch', () => {
       ensureRgPath(probe, { shareDir: fakeShare, allowCachedFallback: true }),
     ).rejects.toThrow(/network unreachable/);
 
-    expect(probe.exec).not.toHaveBeenCalled();
+    expect(probe.exec).toHaveBeenCalledWith(['rg', '--version']);
   });
 
   it('aborts the current caller wait while shared bootstrap work continues', async () => {

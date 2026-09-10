@@ -22,6 +22,8 @@ Kimi Code CLI 可以运行一个工作目录位于远程主机上的会话，通
 
 当已部署包的版本不匹配时，CLI 会自动重新部署，升级无需手动清理。由于传输层就是系统 `ssh`，跳板机、agent 转发、连接复用等连接能力都来自你自己的 OpenSSH 配置，而不是 Kimi Code 特有的配置。
 
+在部署 RTS 的同时，CLI 还会把一个固定版本的 ripgrep 二进制配置到 `~/.kimi-code/remote-agent/bin/rg`（支持 Linux 和 macOS 的 x64 与 arm64 远程平台）。它在首次连接时上传，之后每次连接都会按版本重新校验，因此手动删除后也能自愈。RTS 会把该目录置于其派生的每个进程的 `PATH` 最前，这意味着 `Grep`、`Glob`——以及你在 `Bash` 中运行的任何 `rg`——都会使用这个固定版本的二进制，即使远程主机没有安装 ripgrep。
+
 ## SSH 配置与认证
 
 规格的 host 部分可以是字面主机名，也可以是 OpenSSH 客户端配置（`~/.ssh/config`）中的 `Host` 别名——该文件中的所有配置都会生效，包括 `HostName`、`IdentityFile`、`ProxyJump` / `ProxyCommand`、ssh-agent 和 `ControlMaster` 连接复用。规格中显式给出的 `user@` 或 `:port` 会覆盖配置中的对应值。主机密钥校验使用常规的 `known_hosts` 文件（OpenSSH 记录可信主机密钥的位置），因此新主机的首次连接必须像下文所述在 CLI 之外完成。
@@ -30,7 +32,7 @@ CLI 始终以 `BatchMode=yes` 运行 ssh，禁止任何交互式提示：在 Kim
 
 ## 远程主机要求
 
-远程主机需要提供带 bash 的 POSIX 环境。备有预构建 RTS 二进制（见上文）时别无他求；没有时，则需在 `PATH` 上装有 Node.js 20 或更高版本——部署步骤会探测，不满足时报出明确的错误。ripgrep（`rg`）是可选的：没有它时，`Grep` 会回退到内置的 JavaScript 实现。
+远程主机需要提供带 bash 的 POSIX 环境。备有预构建 RTS 二进制（见上文）时别无他求；没有时，则需在 `PATH` 上装有 Node.js 20 或更高版本——部署步骤会探测，不满足时报出明确的错误。ripgrep（`rg`）同样无需安装：CLI 会自动配置自己的固定版本二进制（见上文）。
 
 ## 哪些在本地、哪些在远程
 
@@ -65,7 +67,7 @@ CLI 也会在后台重新连接。如果后台重连先完成，环境会保持�
 - **主机密钥校验失败**：该主机密钥尚未被信任——在终端中执行一次 `ssh <host>` 并在那里接受密钥。
 - **Permission denied**：`BatchMode=yes` 禁止密码提示，请配置密钥认证或运行中的 ssh-agent。
 - **跳板机**：在 `~/.ssh/config` 中配置 `ProxyJump` 或 `ProxyCommand`；CLI 会通过系统 OpenSSH 客户端自动采用。
-- **部署过期**：RTS 位于远程主机的 `~/.kimi-code/remote-agent/` 下（`rts-bin` 和/或 `rts.js`），版本不匹配时会自动重新部署；手动删除也是安全的，下次连接时会触发重新部署。
+- **部署过期**：RTS 位于远程主机的 `~/.kimi-code/remote-agent/` 下（`rts-bin` 和/或 `rts.js`，以及 `bin/rg`），版本不匹配时会自动重新部署；手动删除也是安全的，下次连接时会触发重新部署。
 
 ## 下一步
 

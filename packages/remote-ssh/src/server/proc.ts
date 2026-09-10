@@ -26,6 +26,12 @@ export class ProcMux {
     private readonly _send: ProcSend,
     private readonly _baseCwd: string,
     private readonly _log: (message: string) => void,
+    /**
+     * Prepended to PATH of every spawned child. Holds the managed
+     * (provisioned) ripgrep, so bare `rg` spawns resolve to the pinned
+     * binary first and fall through to the remote's own PATH otherwise.
+     */
+    private readonly _managedBinDir?: string,
   ) {}
 
   get liveCount(): number {
@@ -38,11 +44,20 @@ export class ProcMux {
     const cwd = optionalAbsolutePath(params, 'cwd') ?? this._baseCwd;
     const env = optionalEnv(params, 'env');
 
+    // The managed bin dir leads the inherited PATH so the pinned ripgrep
+    // wins for bare `rg` spawns (no existence check: a missing dir is a
+    // harmless PATH entry). A caller-supplied PATH still overrides it.
+    // Remotes are POSIX-only, so the separator is hardcoded to ':'.
+    const baseEnv =
+      this._managedBinDir === undefined
+        ? process.env
+        : { ...process.env, PATH: `${this._managedBinDir}:${process.env['PATH'] ?? ''}` };
+
     // Structured argv, no shell; `detached` puts the child in its own
     // process group so kill signals the whole tree.
     const child = spawn(cmd, args, {
       cwd,
-      env: env === undefined ? process.env : { ...process.env, ...env },
+      env: env === undefined ? baseEnv : { ...baseEnv, ...env },
       detached: true,
       windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe'],

@@ -12,9 +12,15 @@ import {
   REMOTE_BIN_VERSION_COMMAND,
   REMOTE_DEPLOY_COMMAND,
   REMOTE_PIPE_COMMAND,
+  REMOTE_RG_DEPLOY_COMMAND,
+  REMOTE_RG_VERSION_COMMAND,
+  deployRg,
   deployTimeoutForBytes,
+  parseRgVersion,
   parseUnamePlatform,
+  probeRemoteRg,
   readLocalSeaBinary,
+  type SshExec,
 } from '#/client/deploy';
 import {
   RemoteBlockedError,
@@ -36,6 +42,8 @@ const ENV_KEYS = [
   'FAKE_SSH_STDOUT_DELAY_MS',
   'FAKE_SSH_UNAME',
   'FAKE_SSH_RTS_BUNDLE',
+  'FAKE_SSH_RG_VERSION',
+  'FAKE_SSH_FAIL_RG_DEPLOY',
 ] as const;
 
 let savedEnv: (string | undefined)[];
@@ -65,6 +73,8 @@ describe('SshPipeClient over fake ssh', () => {
     delete process.env['FAKE_SSH_NO_NODE'];
     delete process.env['FAKE_SSH_STDOUT_DELAY_MS'];
     delete process.env['FAKE_SSH_UNAME'];
+    delete process.env['FAKE_SSH_RG_VERSION'];
+    delete process.env['FAKE_SSH_FAIL_RG_DEPLOY'];
   });
 
   afterEach(async () => {
@@ -127,6 +137,24 @@ describe('SshPipeClient over fake ssh', () => {
   function deployedBundlePath(): string {
     return join(fakeHome, '.kimi-code', 'remote-agent', 'rts.js');
   }
+
+  function rgDeployInvocations(): FakeInvocation[] {
+    return readInvocations().filter(
+      invocation =>
+        invocation.command.startsWith('mkdir -p ') && invocation.command.includes('/bin/rg'),
+    );
+  }
+
+  function rgProbeCount(): number {
+    return readInvocations().filter(invocation => invocation.command === REMOTE_RG_VERSION_COMMAND)
+      .length;
+  }
+
+  function deployedRgPath(): string {
+    return join(fakeHome, '.kimi-code', 'remote-agent', 'bin', 'rg');
+  }
+
+  const fakeRgArtifact = async (): Promise<Buffer> => Buffer.from('fake rg binary fixture\n');
 
   /** A sea/ fixture holding a dummy linux-x64 rts-bin (never executed by the fake). */
   async function makeSeaFixture(): Promise<string> {
@@ -338,6 +366,129 @@ describe('SshPipeClient over fake ssh', () => {
     }
   });
 
+  it('provisions ripgrep on the first connect and skips the upload when the version matches', async () => {
+    const options = fakeOptions({ rgArtifact: fakeRgArtifact, rgVersion: '15.0.0' });
+    const first = await SshPipeClient.connect('ssh://fakehost/tmp/x', options);
+    await first.close();
+
+    // Probe miss (nothing deployed) → one upload of the pinned binary.
+    expect(rgProbeCount()).toBe(1);
+    expect(rgDeployInvocations()).toHaveLength(1);
+    expect(rgDeployInvocations()[0]!.command).toBe(REMOTE_RG_DEPLOY_COMMAND);
+    expect(existsSync(deployedRgPath())).toBe(true);
+
+    // The fake reports the deployed rg as 15.0.0 (FAKE_SSH_RG_VERSION
+    // default), matching the pin: the second connect probes but never
+    // re-uploads.
+    const second = await SshPipeClient.connect('ssh://fakehost/tmp/x', options);
+    try {
+      expect(second.state).toBe('ready');
+      expect(rgProbeCount()).toBe(2);
+      expect(rgDeployInvocations()).toHaveLength(1);
+    } finally {
+      await second.close();
+    }
+  });
+
+  it('re-provisions ripgrep when the remote version is stale', async () => {
+    const options = fakeOptions({ rgArtifact: fakeRgArtifact, rgVersion: '15.0.0' });
+    const first = await SshPipeClient.connect('ssh://fakehost/tmp/x', options);
+    await first.close();
+    expect(rgDeployInvocations()).toHaveLength(1);
+
+    process.env['FAKE_SSH_RG_VERSION'] = '14.1.0';
+    const second = await SshPipeClient.connect('ssh://fakehost/tmp/x', options);
+    try {
+      expect(second.state).toBe('ready');
+      expect(rgDeployInvocations()).toHaveLength(2);
+    } finally {
+      await second.close();
+    }
+  });
+
+  it('provisions ripgrep alongside the binary deploy flavor', async () => {
+    const seaDir = await makeSeaFixture();
+    try {
+      const client = await SshPipeClient.connect(
+        'ssh://fakehost/tmp/x',
+        fakeOptions({ seaDir, rgArtifact: fakeRgArtifact, rgVersion: '15.0.0' }),
+      );
+      try {
+        expect(client.state).toBe('ready');
+        const deploys = readInvocations().filter(invocation =>
+          invocation.command.startsWith('mkdir -p '),
+        );
+        expect(deploys.map(invocation => invocation.command)).toEqual([
+          REMOTE_BIN_DEPLOY_COMMAND,
+          REMOTE_RG_DEPLOY_COMMAND,
+        ]);
+        expect(binPipeInvocations()).toHaveLength(1);
+        expect(existsSync(deployedRgPath())).toBe(true);
+      } finally {
+        await client.close();
+      }
+    } finally {
+      await removeTempDir(seaDir);
+    }
+  });
+
+  it('never fails the connect when the rg artifact provider throws', async () => {
+    const logs: string[] = [];
+    const client = await SshPipeClient.connect(
+      'ssh://fakehost/tmp/x',
+      fakeOptions({
+        rgArtifact: () => Promise.reject(new Error('artifact boom')),
+        rgVersion: '15.0.0',
+        onLog: message => {
+          logs.push(message);
+        },
+      }),
+    );
+    try {
+      expect(client.state).toBe('ready');
+      expect(rgDeployInvocations()).toHaveLength(0);
+      expect(logs.some(message => message.includes('ripgrep provisioning failed'))).toBe(true);
+      expect(await client.fs.exists(fakeHome)).toBe(true);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('never fails the connect when the rg deploy fails', async () => {
+    process.env['FAKE_SSH_FAIL_RG_DEPLOY'] = '1';
+    const logs: string[] = [];
+    const client = await SshPipeClient.connect(
+      'ssh://fakehost/tmp/x',
+      fakeOptions({
+        rgArtifact: fakeRgArtifact,
+        rgVersion: '15.0.0',
+        onLog: message => {
+          logs.push(message);
+        },
+      }),
+    );
+    try {
+      expect(client.state).toBe('ready');
+      expect(rgDeployInvocations()).toHaveLength(1);
+      expect(existsSync(deployedRgPath())).toBe(false);
+      expect(logs.some(message => message.includes('ripgrep provisioning failed'))).toBe(true);
+      expect(await client.fs.exists(fakeHome)).toBe(true);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('skips ripgrep provisioning when no rg options are set', async () => {
+    const client = await SshPipeClient.connect('ssh://fakehost/tmp/x', fakeOptions());
+    try {
+      expect(client.state).toBe('ready');
+      expect(rgProbeCount()).toBe(0);
+      expect(rgDeployInvocations()).toHaveLength(0);
+    } finally {
+      await client.close();
+    }
+  });
+
   it('builds the ssh argv from the spec: -T, BatchMode, port, user@host', async () => {
     const client = await SshPipeClient.connect('ssh://alice@fakehost:2222/tmp/x', fakeOptions());
     try {
@@ -545,6 +696,73 @@ describe('SshPipeClient over fake ssh', () => {
     expect(readInvocations()).toHaveLength(invocationCount);
 
     await expect(client.fs.exists('/x')).rejects.toThrowError(/closed/);
+  });
+});
+
+describe('parseRgVersion', () => {
+  it.each([
+    ['ripgrep 15.0.0', '15.0.0'],
+    ['ripgrep 14.1.1 (rev 1234567)', '14.1.1'],
+    ['ripgrep 0.10.0\n-features:pcre2', '0.10.0'],
+    ['ripgrep 15.0', null],
+    ['rg 15.0.0', null],
+    ['garbage', null],
+    ['', null],
+  ])('parses %j to %j', (input, expected) => {
+    expect(parseRgVersion(input)).toBe(expected);
+  });
+});
+
+describe('probeRemoteRg / deployRg', () => {
+  interface RecordedCall {
+    command: string;
+    stdin?: Buffer;
+  }
+
+  function fakeSshExec(
+    handler: (command: string) => { stdout: string; stderr: string; code: number },
+  ): { ssh: SshExec; calls: RecordedCall[] } {
+    const calls: RecordedCall[] = [];
+    const ssh: SshExec = (command, options) => {
+      calls.push({ command, stdin: options?.stdin });
+      return Promise.resolve(handler(command));
+    };
+    return { ssh, calls };
+  }
+
+  it('returns the parsed version when the probe succeeds', async () => {
+    const { ssh, calls } = fakeSshExec(() => ({
+      stdout: 'ripgrep 15.0.0 (rev abcdef)\n+simd\n',
+      stderr: '',
+      code: 0,
+    }));
+    await expect(probeRemoteRg(ssh)).resolves.toBe('15.0.0');
+    expect(calls.map(call => call.command)).toEqual([REMOTE_RG_VERSION_COMMAND]);
+  });
+
+  it('returns null when the probe exits non-zero', async () => {
+    const { ssh } = fakeSshExec(() => ({
+      stdout: '',
+      stderr: 'bash: rg: No such file or directory',
+      code: 127,
+    }));
+    await expect(probeRemoteRg(ssh)).resolves.toBeNull();
+  });
+
+  it('pipes the binary into the deploy command', async () => {
+    const binary = Buffer.from('rg bytes');
+    const { ssh, calls } = fakeSshExec(() => ({ stdout: '', stderr: '', code: 0 }));
+    await expect(deployRg(ssh, binary)).resolves.toBeUndefined();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.command).toBe(REMOTE_RG_DEPLOY_COMMAND);
+    expect(calls[0]!.stdin?.equals(binary)).toBe(true);
+  });
+
+  it('rejects with the remote stderr when the deploy exits non-zero', async () => {
+    const { ssh } = fakeSshExec(() => ({ stdout: '', stderr: 'disk full\n', code: 1 }));
+    await expect(deployRg(ssh, Buffer.from('x'))).rejects.toThrowError(
+      new RegExp(`ripgrep binary to .*?bin/rg.*disk full`),
+    );
   });
 });
 

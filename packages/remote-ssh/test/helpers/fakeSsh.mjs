@@ -23,10 +23,15 @@
  *                                 uploaded bytes (a dummy fixture that is
  *                                 never executed), bridging stdio the same
  *                                 way for the pipe form.
+ * - `"<...>/bin/rg" --version`  → 127 when no rg was deployed; otherwise
+ *                                 `ripgrep <FAKE_SSH_RG_VERSION ?? 15.0.0>`
+ *                                 (the uploaded bytes are a dummy fixture).
+ * - FAKE_SSH_FAIL_RG_DEPLOY=1   → the rg deploy command exits 1.
  *
  * Env: FAKE_SSH_HOME (required), FAKE_SSH_ARGV_LOG (append every argv as a
  * JSON line), FAKE_SSH_NO_NODE, FAKE_SSH_STDOUT_DELAY_MS, FAKE_SSH_UNAME,
- * FAKE_SSH_RTS_BUNDLE (required for the binary flavor).
+ * FAKE_SSH_RTS_BUNDLE (required for the binary flavor), FAKE_SSH_RG_VERSION,
+ * FAKE_SSH_FAIL_RG_DEPLOY.
  */
 
 import { spawn } from 'node:child_process';
@@ -70,6 +75,10 @@ function main(home) {
   const moveMatch = /mv "[^"]+" "([^"]+)"/.exec(remoteCommand);
   if (remoteCommand.startsWith('mkdir -p ') && deployMatch !== null) {
     const target = expandHome(deployMatch[1]);
+    if (process.env.FAKE_SSH_FAIL_RG_DEPLOY === '1' && target.includes('/bin/rg')) {
+      process.stderr.write('fakeSsh: rg deploy failed by request\n', () => process.exit(1));
+      return;
+    }
     const chunks = [];
     process.stdin.on('data', chunk => chunks.push(chunk));
     process.stdin.on('end', () => {
@@ -85,6 +94,23 @@ function main(home) {
       }
     });
     process.stdin.resume();
+    return;
+  }
+
+  const rgMatch = /^"([^"]+\/rg)" --version$/.exec(remoteCommand);
+  if (rgMatch !== null) {
+    const target = expandHome(rgMatch[1]);
+    if (!existsSync(target)) {
+      process.stderr.write(`bash: line 1: ${rgMatch[1]}: No such file or directory\n`, () =>
+        process.exit(127),
+      );
+      return;
+    }
+    // The uploaded bytes are a dummy fixture that is never executed; the
+    // env-provided version stands in for `rg --version`.
+    process.stdout.write(`ripgrep ${process.env.FAKE_SSH_RG_VERSION ?? '15.0.0'}\n`, () =>
+      process.exit(0),
+    );
     return;
   }
 

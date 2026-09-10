@@ -1,4 +1,6 @@
 import type { Readable, Writable } from 'node:stream';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 import { FrameCodecError, FrameDecoder, FrameWriter } from '#/protocol/codec';
 import {
@@ -19,6 +21,12 @@ export interface RtsServerOptions {
   output: Writable;
   /** Default cwd for proc.spawn; defaults to the server's start cwd. */
   cwd?: string;
+  /**
+   * Bin dir prepended to PATH of every spawned process; holds the managed
+   * (provisioned) ripgrep. Defaults to `~/.kimi-code/remote-agent/bin` —
+   * the location the client deploys the pinned rg to.
+   */
+  managedBinDir?: string;
   /** Diagnostic sink for non-protocol messages; defaults to a noop. */
   log?: (message: string) => void;
   /** Version string reported in the hello frame. */
@@ -57,6 +65,7 @@ export class RtsServer {
       frame => this._send(frame),
       options.cwd ?? process.cwd(),
       this._log,
+      options.managedBinDir ?? join(homedir(), '.kimi-code', 'remote-agent', 'bin'),
     );
     this._handlers = {
       ...OP_HANDLERS,

@@ -7,6 +7,7 @@ import {
 
 import { IFlagService } from '#/app/flag/flag';
 import { Error2, ErrorCodes } from '#/errors';
+import { RG_VERSION } from '#/os/backends/node-local/tools/rgLocator';
 import type {
   RuntimeProviderAttachment,
   RuntimeProviderContext,
@@ -15,6 +16,7 @@ import type {
 import type { RuntimeProviderHost, RuntimeUnitImports } from '#/runtime/runtimeUnitHost';
 
 import { SSH_WORKDIR_FLAG_ID } from './flag';
+import { createRgArtifactProvider } from './rgArtifact';
 import { SshRuntime } from './sshRuntime';
 
 export class SshRuntimeProviderFactory implements RuntimeProviderFactory {
@@ -41,7 +43,11 @@ export class SshRuntimeProviderFactory implements RuntimeProviderFactory {
     const canonicalRoot = canonicalizeSshWorkDirSpec(context.root);
     let client: SshPipeClient;
     try {
-      client = await SshPipeClient.connect(canonicalRoot, this.options);
+      client = await SshPipeClient.connect(canonicalRoot, {
+        ...this.options,
+        rgArtifact: this.options?.rgArtifact ?? createRgArtifactProvider(),
+        rgVersion: this.options?.rgVersion ?? RG_VERSION,
+      });
     } catch (error) {
       throw new Error2(
         ErrorCodes.WORKSPACE_SSH_CONNECT_FAILED,

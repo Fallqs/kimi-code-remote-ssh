@@ -22,6 +22,8 @@ On first connect, the CLI probes the remote host through your system OpenSSH cli
 
 The CLI redeploys automatically whenever the deployed bundle's version does not match, so upgrades need no manual cleanup. Because the transport is the system `ssh`, connection features such as jump hosts, agent forwarding, and connection sharing come from your own OpenSSH setup rather than from Kimi Code-specific configuration.
 
+Alongside the RTS, the CLI provisions a pinned ripgrep binary to `~/.kimi-code/remote-agent/bin/rg` on supported remote platforms (Linux and macOS, x64 and arm64). It is uploaded on first connect and re-checked by version on every later connect, so it self-heals after a manual deletion. The RTS puts this directory first on the `PATH` of every process it spawns, which means `Grep` and `Glob` — and any `rg` you run inside `Bash` — use the pinned binary even when the remote host has no ripgrep installed.
+
 ## SSH configuration and authentication
 
 The host part of the spec can be a literal hostname or a `Host` alias from your OpenSSH client configuration (`~/.ssh/config`) — everything in that file applies, including `HostName`, `IdentityFile`, `ProxyJump` / `ProxyCommand`, ssh-agent, and `ControlMaster` connection sharing. An explicit `user@` or `:port` in the spec overrides the corresponding config value. Host key verification uses your regular `known_hosts` file (where OpenSSH records trusted host keys), so the first connection to a new host must happen outside the CLI, as described below.
@@ -30,7 +32,7 @@ The CLI always runs ssh with `BatchMode=yes`, which forbids interactive prompts:
 
 ## Remote host requirements
 
-The remote host must provide a POSIX environment with bash. With a prebuilt RTS binary available (see above) that is all it needs; without one, Node.js 20 or later must be on its `PATH` — the deploy step probes for it and fails with a clear error otherwise. ripgrep (`rg`) is optional: when it is absent, `Grep` falls back to a built-in JavaScript implementation.
+The remote host must provide a POSIX environment with bash. With a prebuilt RTS binary available (see above) that is all it needs; without one, Node.js 20 or later must be on its `PATH` — the deploy step probes for it and fails with a clear error otherwise. ripgrep (`rg`) needs no installation either: the CLI provisions its own pinned binary (see above).
 
 ## What runs where
 
@@ -65,7 +67,7 @@ Connection failures almost always come from the remote environment or the local 
 - **Host key verification failed**: the host key is not yet trusted — run `ssh <host>` once in your terminal and accept the key there.
 - **Permission denied**: `BatchMode=yes` forbids password prompts, so configure key-based authentication or a running ssh-agent.
 - **Jump hosts**: configure `ProxyJump` or `ProxyCommand` in `~/.ssh/config`; the CLI picks it up through the system OpenSSH client.
-- **Stale deployment**: the RTS lives under `~/.kimi-code/remote-agent/` on the remote host (`rts-bin` and/or `rts.js`) and is redeployed automatically on version mismatch; deleting it by hand is safe and simply triggers a redeploy on the next connect.
+- **Stale deployment**: the RTS lives under `~/.kimi-code/remote-agent/` on the remote host (`rts-bin` and/or `rts.js`, plus `bin/rg`) and is redeployed automatically on version mismatch; deleting it by hand is safe and simply triggers a redeploy on the next connect.
 
 ## Next steps
 

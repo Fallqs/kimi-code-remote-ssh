@@ -74,6 +74,32 @@ export const REMOTE_BIN_DEPLOY_COMMAND =
   `chmod 755 "${REMOTE_RTS_BIN_PATH}.tmp" && ` +
   `mv "${REMOTE_RTS_BIN_PATH}.tmp" "${REMOTE_RTS_BIN_PATH}"`;
 
+// ── managed ripgrep ────────────────────────────────────────────────────
+
+/**
+ * Deploy location of the managed (pinned) ripgrep on the remote. It lives in
+ * its own bin dir so the RTS server can prepend that dir to PATH without
+ * shadowing anything else.
+ */
+export const REMOTE_RG_DIR = `${REMOTE_RTS_DIR}/bin`;
+export const REMOTE_RG_PATH = `${REMOTE_RG_DIR}/rg`;
+/** Version probe of the managed ripgrep. */
+export const REMOTE_RG_VERSION_COMMAND = `"${REMOTE_RG_PATH}" --version`;
+/**
+ * Ripgrep deploy command: tmp file + chmod + rename — the same drop-safety
+ * as {@link REMOTE_BIN_DEPLOY_COMMAND}.
+ */
+export const REMOTE_RG_DEPLOY_COMMAND =
+  `mkdir -p "${REMOTE_RG_DIR}" && cat > "${REMOTE_RG_PATH}.tmp" && ` +
+  `chmod 755 "${REMOTE_RG_PATH}.tmp" && ` +
+  `mv "${REMOTE_RG_PATH}.tmp" "${REMOTE_RG_PATH}"`;
+
+/**
+ * Provides the pinned ripgrep binary for a remote platform. Null means no
+ * artifact is available; the caller then skips provisioning entirely.
+ */
+export type RgArtifactProvider = (platform: RemotePlatformKey) => Promise<Buffer | null>;
+
 // ── one-shot ssh exec ──────────────────────────────────────────────────
 
 export interface SshExecResult {
@@ -226,6 +252,26 @@ export async function probeRemoteBin(
   return probe.code === 0 ? firstLine(probe.stdout) : null;
 }
 
+/**
+ * Parse the semver out of `rg --version` output (first line looks like
+ * `ripgrep 15.0.0`); null when unparsable.
+ */
+export function parseRgVersion(stdout: string): string | null {
+  const line = firstLine(stdout);
+  if (line === null) return null;
+  const match = /^ripgrep (\d+\.\d+\.\d+)/.exec(line);
+  return match?.[1] ?? null;
+}
+
+/** Version of the managed ripgrep; null when absent or unrunnable. */
+export async function probeRemoteRg(
+  ssh: SshExec,
+  options?: { timeoutMs?: number },
+): Promise<string | null> {
+  const probe = await ssh(REMOTE_RG_VERSION_COMMAND, { timeoutMs: options?.timeoutMs });
+  return probe.code === 0 ? parseRgVersion(probe.stdout) : null;
+}
+
 // ── deploy ─────────────────────────────────────────────────────────────
 
 /** Upload the RTS bundle to {@link REMOTE_RTS_PATH} (tmp + rename). */
@@ -258,6 +304,23 @@ export async function deployBin(
   if (result.code !== 0) {
     throw new Error(
       `failed to deploy the RTS binary to ${REMOTE_RTS_BIN_PATH} (ssh exit ${String(result.code)}): ${result.stderr.trim()}`,
+    );
+  }
+}
+
+/** Upload the managed ripgrep binary to {@link REMOTE_RG_PATH} (tmp + chmod + rename). */
+export async function deployRg(
+  ssh: SshExec,
+  binary: Buffer,
+  options?: { timeoutMs?: number },
+): Promise<void> {
+  const result = await ssh(REMOTE_RG_DEPLOY_COMMAND, {
+    stdin: binary,
+    timeoutMs: options?.timeoutMs,
+  });
+  if (result.code !== 0) {
+    throw new Error(
+      `failed to deploy the ripgrep binary to ${REMOTE_RG_PATH} (ssh exit ${String(result.code)}): ${result.stderr.trim()}`,
     );
   }
 }

@@ -1,6 +1,16 @@
 import { createHash } from 'node:crypto';
 import { createWriteStream, existsSync } from 'node:fs';
-import { chmod, copyFile, mkdir, mkdtemp, readFile, rename, rm, stat } from 'node:fs/promises';
+import {
+  chmod,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -13,7 +23,7 @@ import { basename, join } from 'pathe';
 import { abortable } from '#/_base/utils/abort';
 import { ErrorCodes, Error2 } from '#/errors';
 
-const RG_VERSION = '15.0.0';
+export const RG_VERSION = '15.0.0';
 const DOWNLOAD_TIMEOUT_MS = 600_000;
 const RG_ARCHIVE_SHA256: Record<string, string> = {
   'ripgrep-15.0.0-aarch64-apple-darwin.tar.gz':
@@ -55,7 +65,7 @@ function rgBinaryName(): string {
   return process.platform === 'win32' ? 'rg.exe' : 'rg';
 }
 
-function getShareDir(): string {
+export function getShareDir(): string {
   const override = process.env['KIMI_CODE_HOME'];
   if (override !== undefined && override !== '') return override;
   return join(homedir(), '.kimi-code');
@@ -100,10 +110,13 @@ async function resolveRgPath(
 }
 
 export async function findExistingRg(
-  _probe: RgProbe,
+  probe: RgProbe,
   shareDir: string = getShareDir(),
   allowCachedFallback = true,
 ): Promise<RgResolution | undefined> {
+  const probed = await probe.exec(['rg', '--version']).catch(() => ({ exitCode: -1 }));
+  if (probed.exitCode === 0) return { path: 'rg', source: 'system-path' };
+
   const system = await findRgOnPath();
   if (system !== undefined) return { path: system, source: 'system-path' };
 
@@ -173,6 +186,77 @@ export function detectTarget(): string | undefined {
   return undefined;
 }
 
+function rgArchiveName(target: string): string {
+  const ext = target.includes('windows') ? 'zip' : 'tar.gz';
+  return `ripgrep-${RG_VERSION}-${target}.${ext}`;
+}
+
+export async function fetchRgArchiveBuffer(target: string): Promise<Buffer> {
+  const archiveName = rgArchiveName(target);
+  const expectedSha256 = RG_ARCHIVE_SHA256[archiveName];
+  if (expectedSha256 === undefined) {
+    throw new Error2(
+      ErrorCodes.OS_FS_UNAVAILABLE,
+      `No pinned SHA-256 is configured for ripgrep archive ${archiveName}`,
+      { details: { archiveName } },
+    );
+  }
+  const url = `${rgBaseUrl()}/${archiveName}`;
+
+  const controller = new AbortController();
+  const timeoutHandle = setTimeout(() => {
+    controller.abort();
+  }, DOWNLOAD_TIMEOUT_MS);
+  let resp: Response;
+  try {
+    resp = await fetch(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
+  if (!resp.ok || resp.body === null) {
+    throw new Error2(
+      ErrorCodes.OS_FS_UNAVAILABLE,
+      `Failed to download ripgrep: HTTP ${String(resp.status)} ${resp.statusText}`,
+      { details: { url, status: resp.status, statusText: resp.statusText } },
+    );
+  }
+  const chunks: Buffer[] = [];
+  for await (const chunk of Readable.fromWeb(resp.body as never)) {
+    chunks.push(chunk as Buffer);
+  }
+  const archive = Buffer.concat(chunks);
+  verifyBufferChecksum(archive, archiveName, expectedSha256);
+  return archive;
+}
+
+export async function extractRgFromTar(archive: Buffer, target: string): Promise<Buffer> {
+  const tmp = await mkdtemp(join(tmpdir(), 'kimi-rg-tar-'));
+  try {
+    const archivePath = join(tmp, rgArchiveName(target));
+    await writeFile(archivePath, archive);
+    const extractDir = join(tmp, 'extract');
+    await mkdir(extractDir, { recursive: true });
+    await extractTar({
+      file: archivePath,
+      cwd: extractDir,
+      gzip: true,
+      filter: (entryPath: string) => entryPath.endsWith('/rg'),
+    });
+    const extracted = join(extractDir, `ripgrep-${RG_VERSION}-${target}`, 'rg');
+    if (!existsSync(extracted)) {
+      throw new Error2(
+        ErrorCodes.OS_FS_UNAVAILABLE,
+        `Ripgrep archive did not contain expected binary at ${extracted}. ` +
+          'CDN content may have changed.',
+        { details: { path: extracted } },
+      );
+    }
+    return await readFile(extracted);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+}
+
 async function downloadAndInstallRg(shareDir: string): Promise<string> {
   const target = detectTarget();
   if (target === undefined) {
@@ -184,17 +268,7 @@ async function downloadAndInstallRg(shareDir: string): Promise<string> {
   }
 
   const isWindows = target.includes('windows');
-  const archiveExt = isWindows ? 'zip' : 'tar.gz';
-  const archiveName = `ripgrep-${RG_VERSION}-${target}.${archiveExt}`;
-  const expectedSha256 = RG_ARCHIVE_SHA256[archiveName];
-  if (expectedSha256 === undefined) {
-    throw new Error2(
-      ErrorCodes.OS_FS_UNAVAILABLE,
-      `No pinned SHA-256 is configured for ripgrep archive ${archiveName}`,
-      { details: { archiveName } },
-    );
-  }
-  const url = `${rgBaseUrl()}/${archiveName}`;
+  const archive = await fetchRgArchiveBuffer(target);
 
   const binDir = join(shareDir, 'bin');
   await mkdir(binDir, { recursive: true });
@@ -202,28 +276,8 @@ async function downloadAndInstallRg(shareDir: string): Promise<string> {
 
   const tmp = await mkdtemp(join(tmpdir(), 'kimi-rg-'));
   try {
-    const archivePath = join(tmp, archiveName);
-
-    const controller = new AbortController();
-    const timeoutHandle = setTimeout(() => {
-      controller.abort();
-    }, DOWNLOAD_TIMEOUT_MS);
-    let resp: Response;
-    try {
-      resp = await fetch(url, { signal: controller.signal });
-    } finally {
-      clearTimeout(timeoutHandle);
-    }
-    if (!resp.ok || resp.body === null) {
-      throw new Error2(
-        ErrorCodes.OS_FS_UNAVAILABLE,
-        `Failed to download ripgrep: HTTP ${String(resp.status)} ${resp.statusText}`,
-        { details: { url, status: resp.status, statusText: resp.statusText } },
-      );
-    }
-    const write = createWriteStream(archivePath);
-    await pipeline(Readable.fromWeb(resp.body as never), write);
-    await verifyArchiveChecksum(archivePath, archiveName, expectedSha256);
+    const archivePath = join(tmp, rgArchiveName(target));
+    await writeFile(archivePath, archive);
 
     if (isWindows) {
       await extractRgFromZip(archivePath, destination);
@@ -261,14 +315,12 @@ async function downloadAndInstallRg(shareDir: string): Promise<string> {
   }
 }
 
-export async function verifyArchiveChecksum(
-  archivePath: string,
+export function verifyBufferChecksum(
+  archive: Buffer,
   archiveName: string,
   expectedSha256: string,
-): Promise<void> {
-  const actualSha256 = createHash('sha256')
-    .update(await readFile(archivePath))
-    .digest('hex');
+): void {
+  const actualSha256 = createHash('sha256').update(archive).digest('hex');
   if (actualSha256 !== expectedSha256) {
     throw new Error2(
       ErrorCodes.OS_FS_UNAVAILABLE,
@@ -277,6 +329,14 @@ export async function verifyArchiveChecksum(
       { details: { archiveName, expectedSha256, actualSha256 } },
     );
   }
+}
+
+export async function verifyArchiveChecksum(
+  archivePath: string,
+  archiveName: string,
+  expectedSha256: string,
+): Promise<void> {
+  verifyBufferChecksum(await readFile(archivePath), archiveName, expectedSha256);
 }
 
 export async function extractRgFromZip(archivePath: string, destination: string): Promise<void> {
@@ -367,6 +427,7 @@ export function rgUnavailableMessage(cause: unknown): string {
     `  Ubuntu:  sudo apt-get install ripgrep\n` +
     `  Other:   https://github.com/BurntSushi/ripgrep#installation\n` +
     `\n` +
-    `Alternatively, drop a static rg binary at ${shareBin}`
+    `Alternatively, drop a static rg binary at ${shareBin}\n` +
+    `If this is an ssh remote workspace, install ripgrep on the remote host.`
   );
 }

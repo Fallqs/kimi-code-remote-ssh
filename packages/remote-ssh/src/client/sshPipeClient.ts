@@ -29,16 +29,22 @@ import {
   REMOTE_PIPE_COMMAND,
   deploy,
   deployBin,
+  deployRg,
   deployTimeoutForBytes,
   makeSshExec,
   probeRemote,
   probeRemoteBin,
   probeRemotePlatform,
+  probeRemoteRg,
   readLocalBundle,
   readLocalSeaBinary,
+  type RemotePlatformKey,
+  type RgArtifactProvider,
   type SshExec,
   type SshExecResult,
 } from '#/client/deploy';
+
+export type { RemotePlatformKey, RgArtifactProvider } from '#/client/deploy';
 import { RtsFs } from '#/client/fs';
 import type { RtsClientProcess } from '#/client/process';
 import { resolveSshConnection } from '#/client/sshConfig';
@@ -106,6 +112,17 @@ export interface SshPipeOptions {
    * default: this package's sea/). Tests use it.
    */
   readonly seaDir?: string;
+  /**
+   * Provides the pinned ripgrep binary for a remote platform; a null return
+   * means no artifact is available for that platform. When absent, ripgrep
+   * provisioning is skipped entirely.
+   */
+  readonly rgArtifact?: RgArtifactProvider;
+  /**
+   * The pinned ripgrep version (e.g. `'15.0.0'`) the remote is provisioned
+   * to. When absent, ripgrep provisioning is skipped entirely.
+   */
+  readonly rgVersion?: string;
   /** Bounds every one-shot ssh exec and the RTS handshake (default 15 s). */
   readonly connectTimeoutMs?: number;
   /** Reconnect backoff schedule; the last value caps further attempts. */
@@ -132,6 +149,8 @@ export class SshPipeClient {
   private readonly _bundlePath: string | undefined;
   private readonly _deployMode: 'auto' | 'binary' | 'script';
   private readonly _seaDir: string | undefined;
+  private readonly _rgArtifact: RgArtifactProvider | undefined;
+  private readonly _rgVersion: string | undefined;
   private readonly _connectTimeoutMs: number;
   private readonly _backoffMs: number[];
   private readonly _log: (message: string) => void;
@@ -163,6 +182,8 @@ export class SshPipeClient {
     this._bundlePath = options?.bundlePath;
     this._deployMode = options?.deployMode ?? 'auto';
     this._seaDir = options?.seaDir;
+    this._rgArtifact = options?.rgArtifact;
+    this._rgVersion = options?.rgVersion;
     this._connectTimeoutMs = options?.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
     this._backoffMs =
       options?.reconnectBackoffMs !== undefined && options.reconnectBackoffMs.length > 0
@@ -309,6 +330,7 @@ export class SshPipeClient {
     if (binary !== null) {
       this._pipeCommand = REMOTE_BIN_PIPE_COMMAND;
       await this._ensureBinDeployed(binary);
+      await this._ensureRgDeployed(platform);
       return;
     }
     if (this._deployMode === 'binary') {
@@ -320,6 +342,7 @@ export class SshPipeClient {
     }
     this._pipeCommand = REMOTE_PIPE_COMMAND;
     await this._ensureScriptDeployed();
+    await this._ensureRgDeployed(platform);
   }
 
   /** Probe the deployed binary and (re)deploy it when missing or stale. */
@@ -348,6 +371,30 @@ export class SshPipeClient {
       this._log(`deploying RTS ${RTS_VERSION} (remote: ${probe.rtsVersion ?? 'none'})`);
       const bundle = await readLocalBundle(this._bundlePath);
       await deploy(this._exec, bundle, { timeoutMs: this._connectTimeoutMs });
+    }
+  }
+
+  /**
+   * Provision the pinned ripgrep when the remote copy is missing or stale.
+   * Best-effort: a probe/artifact/upload failure is logged, never fatal —
+   * session creation must not depend on it. Runs on every (re)connect, so a
+   * wiped remote self-heals on the next reconnect.
+   */
+  private async _ensureRgDeployed(platform: RemotePlatformKey | null): Promise<void> {
+    if (platform === null || this._rgArtifact === undefined || this._rgVersion === undefined) {
+      return;
+    }
+    try {
+      const version = await probeRemoteRg(this._exec, { timeoutMs: this._connectTimeoutMs });
+      if (version === this._rgVersion) return;
+      const binary = await this._rgArtifact(platform);
+      if (binary === null) return;
+      this._log(`deploying ripgrep ${this._rgVersion} (remote: ${version ?? 'none'})`);
+      await deployRg(this._exec, binary, {
+        timeoutMs: deployTimeoutForBytes(binary.length, this._connectTimeoutMs),
+      });
+    } catch (error) {
+      this._log(`ripgrep provisioning failed: ${(error as Error).message}`);
     }
   }
 
