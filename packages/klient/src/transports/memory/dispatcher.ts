@@ -17,8 +17,8 @@
 import type { ServiceIdentifier } from '@moonshot-ai/agent-core-v2/_base/di/instantiation';
 import type { IAgentScopeHandle } from '@moonshot-ai/agent-core-v2/_base/di/scope';
 import { IWorkspaceInstanceManager } from '@moonshot-ai/agent-core-v2/workspace/workspaceInstance/workspaceInstanceManager';
-import { ISessionManager } from '@moonshot-ai/agent-core-v2/app/sessionManager/sessionManager';
 import { getLiveSessionById } from '@moonshot-ai/agent-core-v2/app/sessionManager/sessionLookup';
+import { tryShadowRegistry } from '@moonshot-ai/agent-core-v2/features/shadow/shadowRegistry';
 import { IAgentLifecycleService } from '@moonshot-ai/agent-core-v2/session/agentLifecycle/agentLifecycle';
 import { ensureMainAgent } from '@moonshot-ai/agent-core-v2/session/agentLifecycle/mainAgent';
 import { agentContextOf } from '@moonshot-ai/agent-core-v2/agent/scopeContext/scopeContext';
@@ -209,7 +209,10 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
       return { kind: 'workspace', like: root };
     }
     if (scope.sessionId === undefined) return { kind: 'core', like: root };
-    const session = root.accessor.get(ISessionManager).get(scope.sessionId) ?? getLiveSessionById(root.accessor, scope.sessionId);
+    const registry = tryShadowRegistry(root.accessor);
+    await registry?.ready;
+    await registry?.whenTransitionSettled(scope.sessionId);
+    const session = getLiveSessionById(root.accessor, scope.sessionId);
     if (session === undefined) {
       throw new RPCError(NOT_FOUND, `session not found: ${scope.sessionId}`);
     }

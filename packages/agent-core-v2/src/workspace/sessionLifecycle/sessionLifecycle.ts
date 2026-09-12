@@ -23,6 +23,7 @@ export interface ForkSessionOptions {
   readonly title?: string;
   readonly metadata?: Record<string, unknown>;
   readonly turnIndex?: number;
+  readonly admissionHeldAgentIds?: readonly string[];
 }
 
 export interface ExternalSessionSource {

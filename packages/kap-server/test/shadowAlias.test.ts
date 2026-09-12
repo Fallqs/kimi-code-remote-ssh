@@ -1,6 +1,8 @@
 import {
   ISessionManager,
+  SHADOW_ACTIVE_METADATA_KEY,
   SHADOW_OF_METADATA_KEY,
+  ShadowRegistryService,
   type ServicesAccessor,
 } from '@moonshot-ai/agent-core-v2';
 import { describe, expect, it, vi } from 'vitest';
@@ -12,35 +14,19 @@ import {
   isClientVisibleSessionId,
 } from '../src/shadowAlias';
 
-class FakeEventBus {
-  private handlers: Array<(e: { type: string }) => void> = [];
-  subscribe(handler: (e: { type: string }) => void) {
-    this.handlers.push(handler);
-    return {
-      dispose: () => {
-        const i = this.handlers.indexOf(handler);
-        if (i >= 0) this.handlers.splice(i, 1);
-      },
-    };
-  }
-  emit(e: { type: string }): void {
-    for (const h of [...this.handlers]) h(e);
-  }
-}
-
 const EMPTY_INDEX = {
   listRecent: async () => ({ items: [], nextCursor: undefined }),
 };
 
-function makeAlias(
-  eventBus = new FakeEventBus(),
-  index: unknown = EMPTY_INDEX,
-): { alias: ShadowAliasService; eventBus: FakeEventBus } {
-  const alias = new ShadowAliasService(
-    eventBus as unknown as ConstructorParameters<typeof ShadowAliasService>[0],
-    index as ConstructorParameters<typeof ShadowAliasService>[1],
+const NO_CLOSE_EVENTS = { onDidCloseSession: undefined };
+
+function makeAlias(index: unknown = EMPTY_INDEX): { alias: ShadowAliasService } {
+  const registry = new ShadowRegistryService(
+    index as ConstructorParameters<typeof ShadowRegistryService>[0],
+    NO_CLOSE_EVENTS as ConstructorParameters<typeof ShadowRegistryService>[1],
   );
-  return { alias, eventBus };
+  const alias = new ShadowAliasService(registry);
+  return { alias };
 }
 
 const ENTER_S1 = {
@@ -93,10 +79,10 @@ describe('ShadowAliasService', () => {
     expect(alias.isShadowed('s1')).toBe(false);
   });
 
-  it('folds enter/exit switch events from the event bus into both maps', () => {
-    const { alias, eventBus } = makeAlias();
+  it('folds enter/exit switches into both maps', () => {
+    const { alias } = makeAlias();
 
-    eventBus.emit(ENTER_S1);
+    alias.noteSwitch(ENTER_S1);
     expect(alias.isShadowed('s1')).toBe(true);
     expect(alias.isShadowId('shadow-1')).toBe(true);
     expect(alias.effectiveId('s1')).toBe('shadow-1');
@@ -104,7 +90,7 @@ describe('ShadowAliasService', () => {
     expect(alias.effectiveId('other')).toBe('other');
     expect(alias.presentedId('other')).toBe('other');
 
-    eventBus.emit(EXIT_S1);
+    alias.noteSwitch(EXIT_S1);
     expect(alias.isShadowed('s1')).toBe(false);
     expect(alias.isShadowId('shadow-1')).toBe(false);
     expect(alias.effectiveId('s1')).toBe('s1');
@@ -142,19 +128,31 @@ describe('ShadowAliasService', () => {
         if (before === undefined) {
           return {
             items: [
-              { id: 'shadow-1', custom: { [SHADOW_OF_METADATA_KEY]: 's1' } },
+              {
+                id: 'shadow-1',
+                custom: { [SHADOW_OF_METADATA_KEY]: 's1', [SHADOW_ACTIVE_METADATA_KEY]: true },
+              },
               { id: 'plain', custom: {} },
+              {
+                id: 'stale',
+                custom: { [SHADOW_OF_METADATA_KEY]: 's3', [SHADOW_ACTIVE_METADATA_KEY]: false },
+              },
             ],
             nextCursor: 'page-2',
           };
         }
         return {
-          items: [{ id: 'shadow-2', custom: { [SHADOW_OF_METADATA_KEY]: 's2' } }],
+          items: [
+            {
+              id: 'shadow-2',
+              custom: { [SHADOW_OF_METADATA_KEY]: 's2', [SHADOW_ACTIVE_METADATA_KEY]: true },
+            },
+          ],
           nextCursor: undefined,
         };
       },
     };
-    const { alias } = makeAlias(new FakeEventBus(), index);
+    const { alias } = makeAlias(index);
 
     await vi.waitFor(() => expect(alias.isShadowed('s1')).toBe(true));
     expect(alias.isShadowed('s2')).toBe(true);
@@ -163,6 +161,8 @@ describe('ShadowAliasService', () => {
     expect(alias.presentedId('shadow-2')).toBe('s2');
     expect(alias.isShadowId('plain')).toBe(false);
     expect(alias.isShadowed('plain')).toBe(false);
+    expect(alias.isShadowId('stale')).toBe(false);
+    expect(alias.isShadowed('s3')).toBe(false);
   });
 
   it('hides shadow ids and resolves the active shadow for client ids', () => {

@@ -24,6 +24,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';
 import { mapActivityStatus } from '../src/routes/v2/sessions';
+import { IShadowAliasService } from '../src/shadowAlias';
 import { authHeaders, authedFetch } from './helpers/auth';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 
@@ -758,6 +759,55 @@ describe('server /api/v2/sessions', () => {
     const merged = page.groups.find((group) => group.workspace.id === WS_A);
     expect(merged?.sessions.map((item) => item.id)).toEqual(['s5', 's1', 's2']);
     expect(merged?.total).toBe(3);
+  });
+
+  it('hides shadow sessions from flat and grouped listings', async () => {
+    await (server as RunningServer).close();
+    const shadowSummaries: SessionSummary[] = [
+      ...SUMMARIES,
+      {
+        id: 'shadow-1',
+        workspaceId: WS_B,
+        cwd: '/repo/b',
+        title: 'Shadow: Alpha',
+        lastPrompt: 'shadow work',
+        createdAt: 7_000,
+        updatedAt: 7_000,
+        archived: false,
+        custom: { shadow_of: 's1' },
+      },
+    ];
+    const shadowAliasStub: IShadowAliasService = {
+      _serviceBrand: undefined,
+      effectiveId: (id) => id,
+      presentedId: (id) => id,
+      isShadowId: (id) => id === 'shadow-1',
+      isShadowed: () => false,
+      noteSwitch: () => {},
+    };
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      seeds: [
+        [ISessionIndex, stubSessionIndex(shadowSummaries)],
+        [IGitService, gitStub],
+        [IShadowAliasService, shadowAliasStub],
+      ],
+    });
+    base = `http://127.0.0.1:${server.port}`;
+
+    const flat = await getData();
+    expect(flat.items.map((item) => item.id)).toEqual(['s1', 's2', 's3']);
+    expect(flat.total).toBe(3);
+
+    const grouped = await getGroupData('?view=by_workspace');
+    expect(grouped.total).toBe(2);
+    const b = grouped.groups.find((group) => group.workspace.id === WS_B);
+    expect(b?.sessions.map((item) => item.id)).toEqual(['s3']);
+    expect(b?.total).toBe(1);
   });
 });
 

@@ -10,10 +10,14 @@
  * Everything else is a field rename (`custom` ↔ `metadata`).
  */
 import type { AgentMeta, SessionMeta } from '@moonshot-ai/agent-core';
-import type {
-  AgentMeta as V2AgentMeta,
-  SessionMeta as V2SessionMeta,
-  SessionSummary as V2SessionSummary,
+import {
+  SHADOW_ACTIVE_METADATA_KEY,
+  SHADOW_CREATED_WORKSPACE_METADATA_KEY,
+  SHADOW_FORK_POINT_METADATA_KEY,
+  SHADOW_OF_METADATA_KEY,
+  type AgentMeta as V2AgentMeta,
+  type SessionMeta as V2SessionMeta,
+  type SessionSummary as V2SessionSummary,
 } from '@moonshot-ai/agent-core-v2';
 
 import { resolve, win32 } from 'node:path';
@@ -45,6 +49,25 @@ export interface SessionSummaryFacts {
   readonly workDir: string;
   readonly sessionDir: string;
   readonly additionalDirs?: readonly string[];
+}
+
+/**
+ * Shadow-mode transparency: the engine records the shadow fork's bookkeeping
+ * in the session's `custom` map, which the client-visible shapes mirror
+ * verbatim — strip those keys so a shadow presented as its source is
+ * indistinguishable from the source itself.
+ */
+export function stripShadowCustomKeys(
+  custom: Record<string, unknown>,
+): Record<string, unknown> {
+  const {
+    [SHADOW_OF_METADATA_KEY]: _shadowOf,
+    [SHADOW_FORK_POINT_METADATA_KEY]: _forkPoint,
+    [SHADOW_ACTIVE_METADATA_KEY]: _active,
+    [SHADOW_CREATED_WORKSPACE_METADATA_KEY]: _createdWorkspace,
+    ...rest
+  } = custom;
+  return rest;
 }
 
 export function v2SummaryToSessionSummary(

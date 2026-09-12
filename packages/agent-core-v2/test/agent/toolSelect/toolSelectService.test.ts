@@ -231,6 +231,10 @@ class FakeLoopService implements IAgentLoopService {
     return toDisposable(() => {});
   }
 
+  acquireAdmissionHold(): IDisposable {
+    return toDisposable(() => {});
+  }
+
   hasPendingRequests(): boolean {
     return false;
   }

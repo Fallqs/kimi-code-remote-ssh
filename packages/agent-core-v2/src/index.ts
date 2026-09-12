@@ -343,6 +343,8 @@ export * from '#/features/shadow/flags';
 export * from '#/features/shadow/shadow';
 export * from '#/features/shadow/shadowCoordinator';
 export * from '#/features/shadow/shadowCoordinatorService';
+export * from '#/features/shadow/shadowHostSupport';
+export * from '#/features/shadow/shadowRegistry';
 export * from '#/features/shadow/shadowService';
 export * from '#/features/shadow/tools/enter-shadow-mode/enter-shadow-mode';
 export * from '#/features/shadow/tools/exit-shadow-mode/exit-shadow-mode';

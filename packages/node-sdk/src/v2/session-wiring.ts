@@ -109,11 +109,23 @@ export class SessionEventWiring {
   /** Pending interactions already handed to the sink (the kernel re-fires the full pending set on every change). */
   private readonly bridgedInteractionIds = new Set<string>();
   private disposed = false;
+  /** The id stamped onto translated events and interaction payloads — the shadow source's id while this session is a shadow fork. */
+  private readonly presentedSessionId: string;
+  /**
+   * Shadow-mode transparency: while this session is the preserved source of a
+   * shadow fork, its domain events are dropped (the client keeps seeing the
+   * shadow's stream stamped with this session's id). Interactions stay
+   * bridged — the source is admission-held, so none can appear anyway.
+   */
+  private suppressed: boolean;
 
   constructor(
     private readonly session: ISessionScopeHandle,
     private readonly sink: SessionEventSink,
+    options: { readonly presentedSessionId?: string; readonly suppressEvents?: boolean } = {},
   ) {
+    this.presentedSessionId = options.presentedSessionId ?? session.id;
+    this.suppressed = options.suppressEvents === true;
     const manager = session.accessor.get(IAgentLifecycleService);
     this.disposables.push(
       onSessionInteractionDidChangePending(manager, () => {
@@ -150,13 +162,22 @@ export class SessionEventWiring {
     this.agentSubscriptions.clear();
   }
 
+  setSuppressed(suppressed: boolean): void {
+    this.suppressed = suppressed;
+  }
+
+  get presentedId(): string {
+    return this.presentedSessionId;
+  }
+
   private attachAgent(agent: IAgentScopeHandle): void {
     if (this.disposed || this.agentSubscriptions.has(agent.id)) return;
-    const sessionId = this.session.id;
+    const sessionId = this.presentedSessionId;
     const agentId = agent.id;
     this.agentSubscriptions.set(
       agentId,
       agent.accessor.get(IEventBus).subscribe((event) => {
+        if (this.suppressed) return;
         const enriched =
           event.type === 'agent.status.updated' ? withStatusSnapshot(agent, event) : event;
         const translated = translateDomainEvent(enriched, sessionId, agentId);
@@ -208,7 +229,7 @@ export class SessionEventWiring {
         toolName: payload.toolName,
         action: payload.action,
         display: payload.display,
-        sessionId: this.session.id,
+        sessionId: this.presentedSessionId,
         agentId: payload.agentId ?? interaction.origin.agentId ?? MAIN_AGENT_ID,
       });
       this.session.accessor.get(ISessionApprovalService).decide(interaction.id, response);
@@ -231,7 +252,7 @@ export class SessionEventWiring {
         turnId: payload.turnId,
         toolCallId: payload.toolCallId,
         questions: payload.questions,
-        sessionId: this.session.id,
+        sessionId: this.presentedSessionId,
         agentId: interaction.origin.agentId ?? MAIN_AGENT_ID,
       });
       const questions = this.session.accessor.get(ISessionQuestionService);

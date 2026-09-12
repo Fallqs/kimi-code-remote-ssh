@@ -1,6 +1,8 @@
 import { ref, type LiveRef } from '#/_base/di/instantiation';
+import type { IDisposable } from '#/_base/di/lifecycle';
 import { Service } from '#/_base/di/service';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IEventBus } from '#/app/event/eventBus';
@@ -17,6 +19,7 @@ import {
   IShadowSessionCoordinator,
   SHADOW_OF_METADATA_KEY,
 } from './shadowCoordinator';
+import { IShadowRegistry, type ShadowTransitionDirection } from './shadowRegistry';
 
 const SHADOW_MODE_FAILURE_REMINDER_VARIANT = 'shadow_mode';
 
@@ -24,6 +27,8 @@ export class AgentShadowModeService extends Service implements IAgentShadowModeS
   declare readonly _serviceBrand: undefined;
 
   private pendingAction: 'enter' | 'exit' | undefined;
+  private transitionKey: string | undefined;
+  private admissionHold: IDisposable | undefined;
 
   constructor(
     @ISessionContext private readonly sessionCtx: ISessionContext,
@@ -34,6 +39,8 @@ export class AgentShadowModeService extends Service implements IAgentShadowModeS
     @IAgentScopeContext private readonly agentCtx: IAgentScopeContext,
     @IAgentContextMemoryService context: IAgentContextMemoryService,
     @IAgentStateService states: IAgentStateService,
+    @IShadowRegistry private readonly registry: IShadowRegistry,
+    @IAgentLoopService private readonly loop: IAgentLoopService,
     @ref(IShadowHostSupport) private readonly hostSupportRef: LiveRef<IShadowHostSupport>,
   ) {
     super();
@@ -47,6 +54,11 @@ export class AgentShadowModeService extends Service implements IAgentShadowModeS
         if (action === undefined) return;
         this.pendingAction = undefined;
         void this.runPending(action).catch((error: unknown) => {
+          if (this.transitionKey !== undefined) {
+            this.registry.abortTransition(this.transitionKey);
+            this.transitionKey = undefined;
+          }
+          this.releaseAdmissionHold();
           const message = error instanceof Error ? error.message : String(error);
           this.reminders.notify(`Shadow mode ${action} failed: ${message}`, {
             variant: SHADOW_MODE_FAILURE_REMINDER_VARIANT,
@@ -77,11 +89,40 @@ export class AgentShadowModeService extends Service implements IAgentShadowModeS
       );
     }
     this.armPending('enter');
+    this.armTransition(this.sessionCtx.sessionId, 'enter');
   }
 
-  requestExit(): void {
+  async requestExit(): Promise<void> {
     this.requireMainAgent();
+    const status = await this.status();
+    if (status === null) {
+      throw new Error2(
+        ErrorCodes.SESSION_SHADOW_INVALID,
+        'Shadow mode exit requested outside a shadow session',
+      );
+    }
     this.armPending('exit');
+    this.armTransition(status.sourceSessionId, 'exit');
+  }
+
+  releaseAdmissionHold(): void {
+    const hold = this.admissionHold;
+    this.admissionHold = undefined;
+    this.transitionKey = undefined;
+    hold?.dispose();
+  }
+
+  private armTransition(sourceSessionId: string, direction: ShadowTransitionDirection): void {
+    try {
+      this.registry.beginTransition(sourceSessionId, direction);
+      this.admissionHold = this.loop.acquireAdmissionHold();
+      this.transitionKey = sourceSessionId;
+    } catch (error) {
+      this.pendingAction = undefined;
+      this.registry.abortTransition(sourceSessionId);
+      this.releaseAdmissionHold();
+      throw error;
+    }
   }
 
   private requireMainAgent(): void {

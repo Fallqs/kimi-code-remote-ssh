@@ -111,6 +111,7 @@ interface SessionState {
   readonly journal: SessionEventJournal;
   readonly tracker: InFlightTurnTracker;
   readonly roster: SubagentRosterTracker;
+  disposed: boolean;
   deferredWork?: SessionActivityState;
   readonly tail: Array<{ seq: number; envelope: EventEnvelope }>;
   readonly targets: Map<BroadcastTarget, TargetSubscription>;
@@ -131,6 +132,7 @@ const GLOBAL_SESSION_ID = '__global__';
 const TRANSCRIPT_RESET_TAIL_TURNS = 0;
 
 async function disposeSessionState(state: SessionState): Promise<void> {
+  state.disposed = true;
   for (const d of state.lifecycleDisposables) d.dispose();
   for (const d of state.agentDisposables.values()) d.dispose();
   await state.journal.close();
@@ -140,7 +142,7 @@ export class SessionEventBroadcaster {
   private readonly sessions = new Map<string, SessionState>();
   private readonly globalTargets = new Set<BroadcastTarget>();
   private readonly diEventTargets = new Set<BroadcastTarget>();
-  private readonly pendingStates = new Map<string, Promise<SessionState | undefined>>();
+  private readonly stateBarriers = new Map<string, Promise<void>>();
   private readonly maxBufferSize: number;
   private readonly coreEventSubscription: IDisposable;
   private closed = false;
@@ -520,20 +522,34 @@ export class SessionEventBroadcaster {
     this.sessions.clear();
   }
 
+  private runExclusive<T>(key: string, task: () => Promise<T>): Promise<T> {
+    const prev = this.stateBarriers.get(key) ?? Promise.resolve();
+    const result = prev.then(task, task);
+    const tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.stateBarriers.set(key, tail);
+    void tail.then(() => {
+      if (this.stateBarriers.get(key) === tail) this.stateBarriers.delete(key);
+    });
+    return result;
+  }
+
+  private runExclusiveAcross<T>(keys: readonly string[], task: () => Promise<T>): Promise<T> {
+    const [head, ...rest] = keys;
+    if (head === undefined) return task();
+    return this.runExclusive(head, () => this.runExclusiveAcross(rest, task));
+  }
+
   private ensureState(sessionId: string): Promise<SessionState | undefined> {
     if (this.closed) return Promise.resolve(undefined);
-    const existing = this.sessions.get(sessionId);
-    if (existing !== undefined) return Promise.resolve(existing);
-    let pending = this.pendingStates.get(sessionId);
-    if (pending === undefined) {
-      pending = this.createSessionState(sessionId).finally(() => {
-        if (this.pendingStates.get(sessionId) === pending) {
-          this.pendingStates.delete(sessionId);
-        }
-      });
-      this.pendingStates.set(sessionId, pending);
-    }
-    return pending;
+    return this.runExclusive(sessionId, async () => {
+      if (this.closed) return undefined;
+      const current = this.sessions.get(sessionId);
+      if (current !== undefined) return current;
+      return this.createSessionState(sessionId);
+    });
   }
 
   private async createSessionState(sessionId: string): Promise<SessionState | undefined> {
@@ -558,6 +574,7 @@ export class SessionEventBroadcaster {
       journal,
       tracker: new InFlightTurnTracker(),
       roster: new SubagentRosterTracker(),
+      disposed: false,
       tail: [],
       targets: new Map(),
       queue: Promise.resolve(),
@@ -584,16 +601,11 @@ export class SessionEventBroadcaster {
   private ensureGlobalState(): Promise<SessionState> {
     const existing = this.sessions.get(GLOBAL_SESSION_ID);
     if (existing !== undefined) return Promise.resolve(existing);
-    let pending = this.pendingStates.get(GLOBAL_SESSION_ID);
-    if (pending === undefined) {
-      pending = this.createGlobalState().finally(() => {
-        if (this.pendingStates.get(GLOBAL_SESSION_ID) === pending) {
-          this.pendingStates.delete(GLOBAL_SESSION_ID);
-        }
-      });
-      this.pendingStates.set(GLOBAL_SESSION_ID, pending);
-    }
-    return pending as Promise<SessionState>;
+    return this.runExclusive(GLOBAL_SESSION_ID, async () => {
+      const current = this.sessions.get(GLOBAL_SESSION_ID);
+      if (current !== undefined) return current;
+      return this.createGlobalState();
+    });
   }
 
   private async createGlobalState(): Promise<SessionState> {
@@ -607,6 +619,7 @@ export class SessionEventBroadcaster {
       journal,
       tracker: new InFlightTurnTracker(),
       roster: new SubagentRosterTracker(),
+      disposed: false,
       tail: [],
       targets: new Map(),
       queue: Promise.resolve(),
@@ -693,8 +706,10 @@ export class SessionEventBroadcaster {
     if (event.type === 'session.meta.updated') {
       const payload = sessionMetaUpdatedPayload(corePayload);
       if (payload === undefined) return;
-      const sessionId = sessionMetaUpdatedSessionId(corePayload);
-      if (sessionId === undefined) return;
+      const rawSessionId = sessionMetaUpdatedSessionId(corePayload);
+      if (rawSessionId === undefined) return;
+      const sessionId =
+        tryShadowAlias(this.opts.core.accessor)?.presentedId(rawSessionId) ?? rawSessionId;
       void this.dispatchSessionEvent(sessionId, {
         type: 'session.meta.updated',
         ...payload,
@@ -795,27 +810,32 @@ export class SessionEventBroadcaster {
     if (alias === undefined) return;
     alias.noteSwitch(payload);
     const clientId = payload.sessionId;
-    const engineId = alias.effectiveId(clientId);
-    const existing = this.sessions.get(clientId);
-    if (existing !== undefined && existing.engineSessionId === engineId) return;
-    const staleEngineState = this.sessions.get(payload.toSessionId);
-    if (staleEngineState !== undefined) {
-      this.sessions.delete(payload.toSessionId);
-      await disposeSessionState(staleEngineState);
-    }
-    if (existing === undefined) return;
-    const targets = new Map(existing.targets);
-    this.sessions.delete(clientId);
-    await disposeSessionState(existing);
-    const state = await this.createSessionState(clientId);
-    if (state === undefined) return;
-    for (const [target, sub] of targets) {
-      state.targets.set(target, sub);
-      if (sub.transcriptGrades !== undefined) {
-        await this.subscribeTranscript(state, target, sub.transcriptGrades, undefined, undefined);
-        if (state.targets.has(target)) state.transcriptSeeded.add(target);
+    const keys = [...new Set([clientId, payload.toSessionId])].toSorted();
+    await this.runExclusiveAcross(keys, async () => {
+      if (this.closed) return;
+      const engineId = alias.effectiveId(clientId);
+      const existing = this.sessions.get(clientId);
+      if (existing !== undefined && existing.engineSessionId === engineId) return;
+      const staleEngineState = this.sessions.get(payload.toSessionId);
+      if (staleEngineState !== undefined && staleEngineState !== existing) {
+        this.sessions.delete(payload.toSessionId);
+        await disposeSessionState(staleEngineState);
       }
-    }
+      if (existing === undefined) return;
+      const targets = new Map(existing.targets);
+      this.sessions.delete(clientId);
+      await disposeSessionState(existing);
+      if (this.closed) return;
+      const state = await this.createSessionState(clientId);
+      if (state === undefined) return;
+      for (const [target, sub] of targets) {
+        state.targets.set(target, sub);
+        if (sub.transcriptGrades !== undefined) {
+          await this.subscribeTranscript(state, target, sub.transcriptGrades, undefined, undefined);
+          if (state.targets.has(target)) state.transcriptSeeded.add(target);
+        }
+      }
+    });
   }
 
   private async dispatchGlobal(event: Event): Promise<void> {    const state = await this.ensureGlobalState();
@@ -1074,6 +1094,7 @@ export class SessionEventBroadcaster {
   }
 
   private async dispatch(state: SessionState, event: Event, volatile: boolean): Promise<void> {
+    if (state.disposed) return;
     const { journal, tracker, roster, tail, targets, sessionId } = state;
     const annotation = tracker.apply(sessionId, event);
     roster.apply(sessionId, event);

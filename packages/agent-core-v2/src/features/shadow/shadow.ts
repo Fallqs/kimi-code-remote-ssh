@@ -18,7 +18,9 @@ export interface IAgentShadowModeService {
 
   requestEnter(): void;
 
-  requestExit(): void;
+  requestExit(): Promise<void>;
+
+  releaseAdmissionHold(): void;
 }
 
 export const IAgentShadowModeService =

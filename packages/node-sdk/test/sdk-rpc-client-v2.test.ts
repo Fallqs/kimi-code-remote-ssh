@@ -43,11 +43,14 @@ import {
   IAgentTodoService,
   IAgentLifecycleService,
   IAgentTowerService,
+  IEventBus,
   IHostRequestHeaders,
   IMcpManagementService,
   IMcpOAuthService,
   ISessionManager,
+  IShadowSessionCoordinator,
   OsProcessErrors,
+  requestSessionInteraction,
 } from '@moonshot-ai/agent-core-v2';
 
 import { McpOAuthService } from '../../agent-core/src/mcp/oauth/service';
@@ -1619,7 +1622,106 @@ describe('SDKRpcClientV2 session workspace fs (readdir / searchFiles)', () => {
   });
 });
 
-async function writeSkill(dir: string, name: string): Promise<void> {  await mkdir(dir, { recursive: true });
+describe('SDKRpcClientV2 shadow mode transparency', () => {
+  it('routes events, approvals, listings, and resume under the source id across enter/exit', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-'));
+    tempDirs.push(homeDir);
+    const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
+    tempDirs.push(workDir);
+    const client = new SDKRpcClientV2({ homeDir, identity: TEST_IDENTITY });
+    try {
+      const created = await client.createSession({ id: 'ses_shadow', workDir });
+      const events: Event[] = [];
+      client.onEvent((event) => events.push(event));
+
+      const coordinator = client.engineAccessor.get(IShadowSessionCoordinator);
+      const enterInfo = await coordinator.enterShadow('ses_shadow');
+      const shadowId = enterInfo.toSessionId;
+      expect(shadowId).not.toBe('ses_shadow');
+
+      // The source id keeps answering live lookups, now bound to the shadow.
+      expect(getLiveSessionById(client.engineAccessor, 'ses_shadow')?.id).toBe(shadowId);
+
+      // An agent appearing in the shadow streams under the source id.
+      const shadowHandle = client.engineAccessor.get(ISessionManager).get(shadowId);
+      expect(shadowHandle).toBeDefined();
+      const shadowLifecycle = shadowHandle!.accessor.get(IAgentLifecycleService);
+      await shadowLifecycle.create({ agentId: 'main' });
+      const shadowMain = shadowLifecycle.handleOf('main');
+      expect(shadowMain).toBeDefined();
+      shadowMain!.accessor.get(IEventBus).publish({
+        type: 'assistant.delta',
+        delta: 'from-shadow',
+        time: 1,
+      } as never);
+
+      // An approval parked in the shadow surfaces under the source id.
+      const approvals: Array<{ sessionId: string; agentId: string; toolName: string }> = [];
+      client.setApprovalHandler('ses_shadow', (request) => {
+        const stamped = request as typeof request & { sessionId: string; agentId: string };
+        approvals.push({
+          sessionId: stamped.sessionId,
+          agentId: stamped.agentId,
+          toolName: stamped.toolName,
+        });
+        return Promise.resolve({ decision: 'approved', feedback: '' });
+      });
+      const approvalOutcome = requestSessionInteraction(shadowLifecycle, {
+        kind: 'approval',
+        payload: { toolName: 'Bash', action: 'run', display: {} },
+        origin: { agentId: 'main' },
+      });
+      await vi.waitFor(() => expect(approvals).toHaveLength(1));
+      expect(approvals[0]).toMatchObject({
+        sessionId: 'ses_shadow',
+        agentId: 'main',
+        toolName: 'Bash',
+      });
+      await expect(approvalOutcome).resolves.toEqual({ decision: 'approved', feedback: '' });
+
+      // Listings hide the shadow; resume presents the source id and workDir.
+      expect((await client.listSessions({})).map((summary) => summary.id)).toEqual(['ses_shadow']);
+      const resumed = await client.resumeSession({ id: 'ses_shadow' });
+      expect(resumed.id).toBe('ses_shadow');
+      expect(resumed.workDir).toBe(created.workDir);
+      expect(resumed.sessionMetadata.workDir).toBe(created.workDir);
+      expect(resumed.sessionMetadata.custom).not.toHaveProperty('shadow_of');
+      expect(resumed.sessionMetadata.custom).not.toHaveProperty('shadow_active');
+
+      // Exit restores routing to the source and drops the shadow wiring.
+      const exitInfo = await coordinator.exitShadow(shadowId);
+      expect(exitInfo.toSessionId).toBe('ses_shadow');
+      expect(getLiveSessionById(client.engineAccessor, 'ses_shadow')?.id).toBe('ses_shadow');
+
+      const sourceHandle = client.engineAccessor.get(ISessionManager).get('ses_shadow');
+      expect(sourceHandle).toBeDefined();
+      const sourceLifecycle = sourceHandle!.accessor.get(IAgentLifecycleService);
+      await sourceLifecycle.create({ agentId: 'main' });
+      const sourceMain = sourceLifecycle.handleOf('main');
+      expect(sourceMain).toBeDefined();
+      sourceMain!.accessor.get(IEventBus).publish({
+        type: 'assistant.delta',
+        delta: 'after-exit',
+        time: 2,
+      } as never);
+      // The shadow wiring was dropped by the exit switch, so nothing else can
+      // still forward: the client saw exactly the shadow's and the source's
+      // deltas, in order, both under the source id.
+      const deltas = events.filter((event) => event.type === 'assistant.delta');
+      expect(deltas.map((event) => (event as { delta?: unknown }).delta)).toEqual([
+        'from-shadow',
+        'after-exit',
+      ]);
+      expect(events.every((event) => event.sessionId === 'ses_shadow')).toBe(true);
+      expect((await client.listSessions({})).map((summary) => summary.id)).toEqual(['ses_shadow']);
+    } finally {
+      await client.close();
+    }
+  }, 30_000);
+});
+
+async function writeSkill(dir: string, name: string): Promise<void> {
+  await mkdir(dir, { recursive: true });
   await writeFile(
     join(dir, 'SKILL.md'),
     `---\nname: ${name}\ndescription: Skill ${name} for the escape-hatch test\n---\n\nBody of ${name}.\n`,

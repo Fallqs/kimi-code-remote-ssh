@@ -12,6 +12,7 @@ import { SHADOW_MODE_FLAG_ID } from './flags';
 import { IAgentShadowModeService } from './shadow';
 import { IShadowSessionCoordinator } from './shadowCoordinator';
 import { ShadowSessionCoordinatorService } from './shadowCoordinatorService';
+import { IShadowRegistry, ShadowRegistryService } from './shadowRegistry';
 import { AgentShadowModeService } from './shadowService';
 import { IEnterShadowModeTool } from './tools/enter-shadow-mode/enter-shadow-mode';
 import { EnterShadowModeTool } from './tools/enter-shadow-mode/enterShadowModeTool';
@@ -35,6 +36,7 @@ export class ShadowFeature extends Feature {
       IShadowSessionCoordinator,
       ShadowSessionCoordinatorService,
     );
+    this.contributeService(LifecycleScope.App, IShadowRegistry, ShadowRegistryService);
     this.contributeAgentService(IAgentShadowModeService, AgentShadowModeService);
     this.contributeTool(IEnterShadowModeTool, EnterShadowModeTool, {
       name: 'EnterShadowMode',

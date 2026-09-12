@@ -6,7 +6,7 @@
  * status event (mirrors kap-server's broadcaster bridge).
  * Run: pnpm exec vitest run test/session-event-wiring.test.ts
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { Event } from '@moonshot-ai/agent-core';
 import {
@@ -15,6 +15,7 @@ import {
   IAgentProfileService,
   IAgentScopeContext,
   IEventBus,
+  ISessionApprovalService,
   ISessionTokenCountingService,
   ISessionUsageService,
   makeAgentScopeContext,
@@ -202,5 +203,123 @@ describe('SessionEventWiring status snapshot fold', () => {
       prompt: 'describe this',
     });
     expect(events[0]).not.toHaveProperty('promptAttachments');
+  });
+});
+
+describe('SessionEventWiring shadow presentation', () => {
+  interface ShadowSessionFake {
+    readonly handle: ISessionScopeHandle;
+    readonly decide: ReturnType<typeof vi.fn>;
+    setPending(items: unknown[]): void;
+    firePendingChanged(): void;
+  }
+
+  function makeShadowSession(agents: FakeAgentHandle[]): ShadowSessionFake {
+    let pendingItems: unknown[] = [];
+    const pendingListeners: Array<() => void> = [];
+    const interactions = {
+      onDidChangePending: (listener: () => void) => {
+        pendingListeners.push(listener);
+        return { dispose: () => {} };
+      },
+      onDidResolve: () => ({ dispose: () => {} }),
+      listPending: () => pendingItems,
+    } as unknown as IAgentInteractionService;
+    for (const agent of agents) agent.set(IAgentInteractionService, interactions);
+    const lifecycle = {
+      list: () => agents.map((agent) => agent.context),
+      get: (agentId: string) => agents.find((agent) => agent.id === agentId)?.context,
+      handleOf: (agentId: string) => agents.find((agent) => agent.id === agentId),
+      onDidCreate: () => ({ dispose: () => {} }),
+      onDidClose: () => ({ dispose: () => {} }),
+    };
+    const decide = vi.fn();
+    const accessor = {
+      get: (token: unknown): unknown => {
+        if (token === IAgentLifecycleService) return lifecycle;
+        if (token === ISessionApprovalService) return { decide };
+        return undefined;
+      },
+    };
+    return {
+      handle: { id: 'shadow-1', kind: 1, accessor, dispose: () => {} } as unknown as ISessionScopeHandle,
+      decide,
+      setPending: (items) => {
+        pendingItems = items;
+      },
+      firePendingChanged: () => {
+        for (const listener of [...pendingListeners]) listener();
+      },
+    };
+  }
+
+  it('stamps domain events with the presented session id', () => {
+    const agent = new FakeAgentHandle('main');
+    const { sink, events } = collectingSink();
+    const session = makeShadowSession([agent]);
+    const wiring = new SessionEventWiring(session.handle, sink, { presentedSessionId: 's1' });
+    try {
+      agent.bus.emit({ type: 'assistant.delta', delta: 'Hi', time: 1 });
+    } finally {
+      wiring.dispose();
+    }
+
+    expect(wiring.presentedId).toBe('s1');
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: 'assistant.delta', sessionId: 's1', agentId: 'main' });
+  });
+
+  it('drops domain events while suppressed and resumes after unsuppress', () => {
+    const agent = new FakeAgentHandle('main');
+    const { sink, events } = collectingSink();
+    const session = makeShadowSession([agent]);
+    const wiring = new SessionEventWiring(session.handle, sink, {
+      presentedSessionId: 's1',
+      suppressEvents: true,
+    });
+    try {
+      agent.bus.emit({ type: 'assistant.delta', delta: 'hidden', time: 1 });
+      expect(events).toHaveLength(0);
+      wiring.setSuppressed(false);
+      agent.bus.emit({ type: 'assistant.delta', delta: 'shown', time: 2 });
+    } finally {
+      wiring.dispose();
+    }
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: 'assistant.delta', delta: 'shown', sessionId: 's1' });
+  });
+
+  it('bridges approvals with the presented session id', async () => {
+    const agent = new FakeAgentHandle('main');
+    const { sink } = collectingSink();
+    const approvalRequests: unknown[] = [];
+    sink.requestApproval = (request) => {
+      approvalRequests.push(request);
+      return Promise.resolve('cancelled' as never);
+    };
+    const session = makeShadowSession([agent]);
+    const wiring = new SessionEventWiring(session.handle, sink, { presentedSessionId: 's1' });
+    try {
+      session.setPending([
+        {
+          id: 'i1',
+          kind: 'approval',
+          payload: { toolName: 'Bash', action: 'run', display: {} },
+          origin: { agentId: 'main' },
+        },
+      ]);
+      session.firePendingChanged();
+      await vi.waitFor(() => expect(approvalRequests).toHaveLength(1));
+    } finally {
+      wiring.dispose();
+    }
+
+    expect(approvalRequests[0]).toMatchObject({
+      sessionId: 's1',
+      agentId: 'main',
+      toolName: 'Bash',
+    });
+    expect(session.decide).toHaveBeenCalledWith('i1', 'cancelled');
   });
 });

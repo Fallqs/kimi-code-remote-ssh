@@ -38,7 +38,7 @@ export class ExitShadowModeTool implements IExitShadowModeTool {
     }
 
     try {
-      this.shadow.requestExit();
+      await this.shadow.requestExit();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to exit shadow mode.';
       return { isError: true, output: `Failed to exit shadow mode: ${message}` };

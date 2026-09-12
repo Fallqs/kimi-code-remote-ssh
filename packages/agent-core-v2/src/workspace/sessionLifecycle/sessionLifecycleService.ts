@@ -555,8 +555,10 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     const quiescenceHolds: IDisposable[] = [];
     try {
       if (sourceHandle !== undefined) {
+        const heldAgentIds = new Set(opts.admissionHeldAgentIds ?? []);
         const sourceAgents = sourceHandle.accessor.get(IAgentLifecycleService);
         for (const agent of sourceAgents.list()) {
+          if (heldAgentIds.has(agent.agentId)) continue;
           const agentHandle = sourceAgents.handleOf(agent.agentId);
           if (agentHandle === undefined) continue;
           const hold = agentHandle.accessor.get(IAgentLoopService).tryAcquireQuiescence();

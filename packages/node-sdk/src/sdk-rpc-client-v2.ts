@@ -228,6 +228,7 @@ import {
   ProfileError,
   ProfileErrors,
   SshRuntime,
+  SESSION_SHADOW_SWITCHED_EVENT,
   Error2 as V2Error2,
   ErrorCodes as V2ErrorCodes,
   resolveAgentTaskConfig,
@@ -237,6 +238,7 @@ import {
   resolvePrintBackgroundMode,
   summarizeSkill,
   towerEnterFailureMessage,
+  tryShadowRegistry,
   type IAgentScopeHandle,
   type IDisposable,
   type ISessionScopeHandle,
@@ -244,6 +246,7 @@ import {
   type McpManagedServer,
   type Scope,
   type ServicesAccessor,
+  type SessionShadowSwitchedEvent,
   type SessionSummary as V2SessionSummary,
 } from '@moonshot-ai/agent-core-v2';
 import type { AgentHandle, Klient } from '@moonshot-ai/klient';
@@ -350,10 +353,12 @@ import {
 } from '#/v2/global-mcp';
 import {
   normalizeWorkDir,
+  stripShadowCustomKeys,
   v2MetaToSessionMeta,
   v2SummaryToSessionSummary,
 } from '#/v2/session-mapper';
 import { SessionEventWiring } from '#/v2/session-wiring';
+import '#/v2/shadowHostSupport';
 
 export interface SDKRpcClientV2Options {
   readonly homeDir?: string;
@@ -488,8 +493,28 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
       // global-bus type is a daemon/WS-edge event the in-process v1 client
       // never saw, so the translation filters down to that single type.
       this.app.accessor.get(IEventService).subscribe((event) => {
+        // Shadow-mode transparency: the fork/merge switch is handled
+        // internally (rewire + id stamping) and never reaches the client —
+        // from its perspective the source session simply keeps running.
+        if (event.type === SESSION_SHADOW_SWITCHED_EVENT) {
+          this.handleShadowSwitch(event as unknown as SessionShadowSwitchedEvent);
+          return;
+        }
         const translated = translateGlobalEvent(event);
-        if (translated !== undefined) this.receiveEvent(translated);
+        if (translated === undefined) return;
+        // Shadow-mode transparency: the emitting session may be a shadow fork
+        // (e.g. a title/lastPrompt update during shadow mode) — restamp the
+        // client-visible id before forwarding.
+        const sessionId = (translated as { readonly sessionId?: unknown }).sessionId;
+        const presented =
+          typeof sessionId === 'string'
+            ? tryShadowRegistry(this.engineAccessor)?.presentedId(sessionId)
+            : undefined;
+        if (presented !== undefined && presented !== sessionId) {
+          this.receiveEvent(Object.assign({}, translated, { sessionId: presented }));
+          return;
+        }
+        this.receiveEvent(translated);
       }),
       // A session closed without going through this client (archive, an
       // engine-initiated close) drops its wiring with the scope. Close events
@@ -497,6 +522,12 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
       // future — through the App-scope registry.
       followSessionLifecycles(this.app.accessor, (service) =>
         service.onDidCloseSession((closed) => {
+          // A shadow fork closed without ExitShadowMode: hand the source's
+          // stream back before dropping the shadow's wiring.
+          const wiring = this.sessionWirings.get(closed.sessionId);
+          if (wiring !== undefined && wiring.presentedId !== closed.sessionId) {
+            this.sessionWirings.get(wiring.presentedId)?.setSuppressed(false);
+          }
           this.unwireSession(closed.sessionId);
         }),
       ),
@@ -1111,9 +1142,32 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
    * goes through the engine's lifecycle close, whose `onDidCloseSession`
    * subscription (constructor) drops the wiring.
    */
-  private wireSession(handle: ISessionScopeHandle): void {
+  private wireSession(
+    handle: ISessionScopeHandle,
+    options: { readonly presentedSessionId?: string; readonly suppressEvents?: boolean } = {},
+  ): void {
     if (this.sessionWirings.has(handle.id)) return;
-    this.sessionWirings.set(handle.id, new SessionEventWiring(handle, this));
+    this.sessionWirings.set(handle.id, new SessionEventWiring(handle, this, options));
+  }
+
+  /**
+   * Shadow-mode transparency: an enter switch forks the source into a shadow
+   * session, an exit switch merges it back. The client keeps talking to the
+   * source id throughout, so the source wiring goes silent for the shadow's
+   * lifetime while the shadow is wired with the source's id stamped onto its
+   * events and interactions; exit reverses the arrangement.
+   */
+  private handleShadowSwitch(payload: SessionShadowSwitchedEvent): void {
+    if (payload.direction === 'enter') {
+      this.sessionWirings.get(payload.fromSessionId)?.setSuppressed(true);
+      const shadow = getLiveSessionById(this.engineAccessor, payload.toSessionId);
+      if (shadow !== undefined) {
+        this.wireSession(shadow, { presentedSessionId: payload.fromSessionId });
+      }
+      return;
+    }
+    this.unwireSession(payload.fromSessionId);
+    this.sessionWirings.get(payload.toSessionId)?.setSuppressed(false);
   }
 
   private unwireSession(sessionId: string): void {
@@ -1141,17 +1195,35 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
     // document can lag both the backfill and the clear (a retry started after
     // a failure), so never read the document here.
     const liveOutcome = handle.accessor.get(ISessionActivityView).state().lastTurnReason;
+    // Shadow-mode transparency: a shadow fork is presented under its source's
+    // id, with the source's cwd/sessionDir (the shadow lives under the local
+    // home dir) and without the shadow-internal metadata keys.
+    const presentedId = tryShadowRegistry(this.engineAccessor)?.presentedId(handle.id) ?? handle.id;
+    let workDir = ctx.cwd;
+    let sessionDir = ctx.sessionDir;
+    let custom = meta.custom;
+    if (presentedId !== handle.id) {
+      const source = this.engineAccessor.get(ISessionManager).get(presentedId);
+      if (source !== undefined) {
+        const sourceCtx = source.accessor.get(ISessionContext);
+        workDir = sourceCtx.cwd;
+        sessionDir = sourceCtx.sessionDir;
+      }
+      if (custom !== undefined) {
+        custom = stripShadowCustomKeys(custom);
+      }
+    }
     return {
-      id: meta.id,
+      id: presentedId,
       title: meta.title,
       titleKind: meta.titleKind,
       lastPrompt: meta.lastPrompt,
-      workDir: ctx.cwd,
-      sessionDir: ctx.sessionDir,
+      workDir,
+      sessionDir,
       createdAt: meta.createdAt,
       updatedAt: meta.updatedAt,
       archived: meta.archived,
-      metadata: meta.custom as JsonObject | undefined,
+      metadata: custom as JsonObject | undefined,
       additionalDirs: workspace.additionalDirs,
       lastTurnReason: liveOutcome,
     };
@@ -1207,9 +1279,21 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
         }
       }
     }
+    // Shadow-mode transparency: the sessionMetadata mirrors the summary's
+    // presentation — source workDir, no shadow-internal custom keys.
+    const sessionMeta = v2MetaToSessionMeta(meta);
+    if (tryShadowRegistry(this.engineAccessor)?.isShadowId(handle.id) === true) {
+      const sourceId = tryShadowRegistry(this.engineAccessor)?.presentedId(handle.id);
+      const source =
+        sourceId === undefined
+          ? undefined
+          : this.engineAccessor.get(ISessionManager).get(sourceId);
+      sessionMeta.workDir = source?.accessor.get(ISessionContext).cwd ?? sessionMeta.workDir;
+      sessionMeta.custom = stripShadowCustomKeys(sessionMeta.custom);
+    }
     return {
       ...(await this.liveSessionSummary(handle)),
-      sessionMetadata: v2MetaToSessionMeta(meta),
+      sessionMetadata: sessionMeta,
       agents,
       warning: undefined,
     };
@@ -1233,6 +1317,14 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
   ): Promise<ResumedAgentState> {
     const facade = this.klient.session(session.id).agent(agent.id);
     const ctx = session.accessor.get(ISessionContext);
+    // Shadow-mode transparency: a shadow lives under the local home dir but
+    // presents its source's cwd.
+    const presentedId = tryShadowRegistry(this.engineAccessor)?.presentedId(session.id) ?? session.id;
+    const presentedCwd =
+      presentedId === session.id
+        ? ctx.cwd
+        : (this.engineAccessor.get(ISessionManager).get(presentedId)?.accessor.get(ISessionContext)
+            .cwd ?? ctx.cwd);
     const [context, plan, usage, background, folded] = await Promise.all([
       facade.getContext(),
       facade.getPlan(),
@@ -1251,7 +1343,7 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
     return {
       type,
       config: {
-        cwd: ctx.cwd,
+        cwd: presentedCwd,
         provider: undefined,
         modelAlias: profile.modelAlias,
         modelCapabilities: profile.modelCapabilities,
@@ -1307,6 +1399,9 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
   }
 
   override async listSessionsPage(input: ListSessionsOptions = {}): Promise<SessionSummaryPage> {
+    // Shadow forks are client-invisible: wait for the registry's rebuild so
+    // the filter below sees aliases restored from a previous process.
+    await tryShadowRegistry(this.engineAccessor)?.ready;
     // v1 rejects an empty workDir and bucket-filters by the normalized path;
     // the v2 index filters by workspace-id set instead.
     const workspaceIds =
@@ -1354,6 +1449,8 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
     item: V2SessionSummary,
     workspacesById: ReadonlyMap<string, { readonly root: string }>,
   ): SessionSummary | undefined {
+    // Shadow forks are an engine-internal mechanism: never listed.
+    if (tryShadowRegistry(this.engineAccessor)?.isShadowId(item.id) === true) return undefined;
     const workDir = item.cwd ?? workspacesById.get(item.workspaceId)?.root;
     if (workDir === undefined) return undefined;
     // A live session reports its own outcome; the index may still carry a
@@ -1573,7 +1670,9 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
         additionalDirs: input.additionalDirs,
       });
       if (handle === undefined) throw SDKRpcClientV2.sessionNotFound(input.id);
-      this.wireSession(handle);
+      // While the session is shadowed the resume lands on the live shadow
+      // fork: wire it stamped with the source id the client asked for.
+      this.wireSession(handle, { presentedSessionId: input.id });
       return this.resumedSessionSummary(handle, {
         includeSubagents: input.includeSubagents,
         replayTurnLimit: input.replayTurnLimit,

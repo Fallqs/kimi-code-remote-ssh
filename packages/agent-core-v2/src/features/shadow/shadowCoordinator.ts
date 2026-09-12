@@ -8,6 +8,8 @@ export const SHADOW_FORK_POINT_METADATA_KEY = 'shadow_fork_message_count';
 
 export const SHADOW_CREATED_WORKSPACE_METADATA_KEY = 'shadow_created_workspace';
 
+export const SHADOW_ACTIVE_METADATA_KEY = 'shadow_active';
+
 export type ShadowSwitchDirection = 'enter' | 'exit';
 
 export interface ShadowSwitchInfo {

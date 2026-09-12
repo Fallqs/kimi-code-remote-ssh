@@ -751,6 +751,45 @@ describe('Agent loop', () => {
     await expect(resumed.result).resolves.toMatchObject({ type: 'completed' });
   });
 
+  it('acquires an admission hold even while a turn is active and blocks later admissions', async () => {
+    let started!: () => void;
+    const activeStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let release!: () => void;
+    const canFinish = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const hook = loop.hooks.onWillBeginStep.register('test-admission-hold', async (_hookCtx, next) => {
+      started();
+      await canFinish;
+      await next();
+    });
+
+    const active = (await loop.enqueue(nextTurnMessage('active')).assigned).turn;
+    await activeStarted;
+
+    const hold = loop.acquireAdmissionHold();
+    expect(active.signal.aborted).toBe(false);
+    const held = loop.enqueue(nextTurnMessage('held'));
+    let assigned = false;
+    void held.assigned.then(() => {
+      assigned = true;
+    });
+
+    hook.dispose();
+    ctx.mockNextResponse({ type: 'text', text: 'completed normally' });
+    release();
+    await expect(active.result).resolves.toMatchObject({ type: 'completed' });
+    await Promise.resolve();
+    expect(assigned).toBe(false);
+
+    ctx.mockNextResponse({ type: 'text', text: 'after hold' });
+    hold.dispose();
+    const resumed = (await held.assigned).turn;
+    await expect(resumed.result).resolves.toMatchObject({ type: 'completed' });
+  });
+
   it('can abort an admission while quiescence holds it', async () => {
     const lease = loop.tryAcquireQuiescence();
     expect(lease).toBeDefined();

@@ -5,6 +5,7 @@ import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
 import { ISessionManager, type ISessionManager as SessionManager } from '#/app/sessionManager/sessionManager';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { isError2 } from '#/errors';
+import { tryShadowRegistry } from '#/features/shadow/shadowRegistry';
 import type { Program } from '#/program/program';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import type { ResumeSessionOptions } from '#/workspace/sessionLifecycle/sessionLifecycle';
@@ -34,8 +35,12 @@ export async function resumeSessionById(
   sessionId: string,
   opts?: ResumeSessionOptions,
 ): Promise<ISessionScopeHandle | undefined> {
+  const registry = tryShadowRegistry(accessor);
+  await registry?.ready;
+  await registry?.whenTransitionSettled(sessionId);
+  const effectiveId = registry?.effectiveId(sessionId) ?? sessionId;
   try {
-    return await accessor.get(ISessionManager).resume(sessionId, opts);
+    return await accessor.get(ISessionManager).resume(effectiveId, opts);
   } catch (error) {
     accessor
       .get(ITelemetryService)
@@ -51,7 +56,9 @@ export function getLiveSessionById(
   accessor: ServicesAccessor,
   sessionId: string,
 ): ISessionScopeHandle | undefined {
-  return accessor.get(ISessionManager).get(sessionId);
+  const registry = tryShadowRegistry(accessor);
+  const effectiveId = registry?.effectiveId(sessionId) ?? sessionId;
+  return accessor.get(ISessionManager).get(effectiveId);
 }
 
 export async function closeSessionById(

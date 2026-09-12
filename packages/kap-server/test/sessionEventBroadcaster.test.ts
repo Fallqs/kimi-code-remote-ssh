@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -37,6 +37,8 @@ import {
   IWorkspaceSessions,
   MAIN_AGENT_ID,
   makeAgentScopeContext,
+  SESSION_SHADOW_SWITCHED_EVENT,
+  ShadowRegistryService,
 } from '@moonshot-ai/agent-core-v2';
 import { Emitter } from '@moonshot-ai/agent-core-v2/_base/event';
 import { TurnStarted } from '@moonshot-ai/agent-core-v2/agent/loop/turnEvents';
@@ -44,6 +46,7 @@ import type { AgentEvent } from '../src/transport/ws/v1/events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { sessionEventMessageSchema } from '../src/protocol/ws-control';
+import { IShadowAliasService, ShadowAliasService } from '../src/shadowAlias';
 import {
   type BroadcastDelivery,
   type BroadcastTarget,
@@ -458,6 +461,7 @@ function makeCore(
   sessions: Map<string, FakeLifecycle>,
   eventBus = new FakeEventBus(),
   metaAgents: Record<string, { type?: string; parentAgentId?: string }> = {},
+  alias?: unknown,
 ): Scope {
   const sessionFor = (sid: string) => {
     const lifecycle = sessions.get(sid);
@@ -488,6 +492,7 @@ function makeCore(
   const accessor = {
     get(token: unknown): unknown {
       if (token === IEventService) return eventBus;
+      if (token === IShadowAliasService) return alias;
       if (token === ISessionManager) {
         return {
           get: sessionFor,
@@ -3028,6 +3033,117 @@ describe('SessionEventBroadcaster', () => {
       await bc.flushTranscriptSeed('s1', view.target);
 
       expect(transcriptEnvelopes(view.envelopes)).toHaveLength(0);
+    });
+  });
+
+  describe('shadow switch rebinding', () => {
+    const EMPTY_INDEX = {
+      listRecent: async () => ({ items: [], nextCursor: undefined }),
+    };
+    const NO_CLOSE_EVENTS = { onDidCloseSession: undefined };
+
+    let alias: ShadowAliasService;
+
+    beforeEach(async () => {
+      await bc.close();
+      alias = new ShadowAliasService(
+        new ShadowRegistryService(
+          EMPTY_INDEX as unknown as ConstructorParameters<typeof ShadowRegistryService>[0],
+          NO_CLOSE_EVENTS as unknown as ConstructorParameters<typeof ShadowRegistryService>[1],
+        ),
+      );
+      bc = new SessionEventBroadcaster({
+        eventsDir: dir,
+        core: makeCore(sessions, eventBus, {}, alias),
+        maxBufferSize: 3,
+      });
+    });
+
+    function switchEvent(direction: 'enter' | 'exit', fromSessionId: string, toSessionId: string) {
+      return {
+        type: SESSION_SHADOW_SWITCHED_EVENT,
+        payload: undefined,
+        sessionId: 's1',
+        fromSessionId,
+        toSessionId,
+        direction,
+      };
+    }
+
+    async function readJournalEntries(
+      sessionId: string,
+    ): Promise<Array<{ seq: number; envelope: EventEnvelope }>> {
+      const raw = await readFile(join(dir, `${sessionId}.jsonl`), 'utf8');
+      return raw
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line))
+        .filter((line) => line.kind === 'event');
+    }
+
+    function expectSingleWriter(entries: Array<{ seq: number }>): void {
+      const seqs = entries.map((entry) => entry.seq);
+      expect(new Set(seqs).size).toBe(seqs.length);
+      expect(seqs).toEqual([...seqs].toSorted((a, b) => a - b));
+    }
+
+    it('keeps a single journal writer when a subscribe races a shadow enter', async () => {
+      const source = new FakeLifecycle();
+      source.addAgent('main');
+      sessions.set('s1', source);
+      const shadow = new FakeLifecycle();
+      const shadowMain = shadow.addAgent('main');
+      sessions.set('shadow-1', shadow);
+
+      const first = collectingTarget();
+      await bc.subscribe('s1', first.target);
+
+      eventBus.emit(switchEvent('enter', 's1', 'shadow-1'));
+      const second = collectingTarget();
+      await bc.subscribe('s1', second.target);
+
+      shadowMain.bus.emit(agentEvent('turn.started', { turnId: 7 }));
+      await bc.getCursor('s1');
+      await bc.close();
+
+      const entries = await readJournalEntries('s1');
+      expectSingleWriter(entries);
+      expect(entries.filter((entry) => entry.envelope.type === 'turn.started')).toHaveLength(1);
+      expect(first.envelopes.some((envelope) => envelope.type === 'turn.started')).toBe(true);
+      expect(second.envelopes.some((envelope) => envelope.type === 'turn.started')).toBe(true);
+    });
+
+    it('rebinds to the source engine on shadow exit without duplicating events', async () => {
+      const source = new FakeLifecycle();
+      const sourceMain = source.addAgent('main');
+      sessions.set('s1', source);
+      const shadow = new FakeLifecycle();
+      const shadowMain = shadow.addAgent('main');
+      sessions.set('shadow-1', shadow);
+
+      const view = collectingTarget();
+      await bc.subscribe('s1', view.target);
+
+      eventBus.emit(switchEvent('enter', 's1', 'shadow-1'));
+      await bc.getCursor('s1');
+
+      shadowMain.bus.emit(agentEvent('turn.started', { turnId: 1 }));
+      await bc.getCursor('s1');
+
+      eventBus.emit(switchEvent('exit', 'shadow-1', 's1'));
+      await bc.getCursor('s1');
+
+      sourceMain.bus.emit(agentEvent('turn.started', { turnId: 2 }));
+      await bc.getCursor('s1');
+      await bc.close();
+
+      const entries = await readJournalEntries('s1');
+      expectSingleWriter(entries);
+      const started = entries.filter((entry) => entry.envelope.type === 'turn.started');
+      expect(started).toHaveLength(2);
+      expect(
+        started.map((entry) => (entry.envelope.payload as { turnId: number }).turnId),
+      ).toEqual([1, 2]);
     });
   });
 });

@@ -16,6 +16,7 @@ import { z } from 'zod';
 import { defineRoute } from '../../middleware/defineRoute';
 import { errEnvelope, okEnvelope } from '../../protocol/envelope';
 import { ErrorCode } from '../../protocol/error-codes';
+import { tryShadowAlias } from '../../shadowAlias';
 import { resolveSessionFacts, type SessionFacts } from '../sessions';
 
 interface V2SessionsRouteHost {
@@ -533,6 +534,7 @@ export function registerV2SessionsRoutes(app: V2SessionsRouteHost, core: Scope):
       };
 
       const filtered = page.items.filter((summary) => {
+        if (tryShadowAlias(core.accessor)?.isShadowId(summary.id) === true) return false;
         if (query.archived === 'true' && !summary.archived) return false;
         if (
           query.hasPrompt !== undefined &&

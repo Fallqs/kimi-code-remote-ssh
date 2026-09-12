@@ -74,6 +74,7 @@ export function stubLoopWithHooks(options: StubLoopOptions = {}): StubLoop {
     cancel(turnId, reason) { cancels.push({ turnId, reason }); if (active === undefined || (turnId !== undefined && active.id !== turnId)) return false; active.cancel(reason); return true; },
     cancelFromUser(turnId) { stub.cancel(turnId); },
     tryAcquireQuiescence: () => toDisposable(() => {}),
+    acquireAdmissionHold: () => toDisposable(() => {}),
     hasPendingRequests: () => queue.hasPendingRequests(), registerLoopErrorHandler: errorHandlers.register,
     settled: () => Promise.resolve(),
     drainNextBatch(context) { const batch = queue.takeNextBatch(); if (!batch) return undefined; materialize(batch.driver, context); for (const r of batch.merged) materialize(r, context); return batch; },
