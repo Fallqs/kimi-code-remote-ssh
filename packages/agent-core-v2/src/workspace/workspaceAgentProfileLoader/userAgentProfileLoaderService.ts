@@ -3,7 +3,12 @@ import type { AgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog
 import { IBuiltinAgentProfileLoader } from '#/app/agentProfileCatalog/builtinAgentProfileLoader';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
+import { IHostEnvironment, type HostEnvironmentInfo } from '#/os/interface/hostEnvironment';
 import { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
+import {
+  workspaceHostPaths,
+  type WorkspaceHostPaths,
+} from '#/workspace/workspaceContext/workspaceHostPaths';
 
 import { discoverAgentFiles } from './internal/agentFileDiscovery';
 import { AgentProfileLoaderBase } from './internal/agentProfileLoader';
@@ -34,6 +39,7 @@ export class UserAgentProfileLoaderService
     @ILogService log: ILogService,
     @IBuiltinAgentProfileLoader private readonly builtin: IBuiltinAgentProfileLoader,
     @IWorkspaceContext private readonly workspace: IWorkspaceContext,
+    @IHostEnvironment private readonly env: HostEnvironmentInfo,
     registry?: IAgentProfileRegistry,
   ) {
     super(log, registry);
@@ -49,18 +55,22 @@ export class UserAgentProfileLoaderService
     return this.defaultProfile;
   }
 
+  private get paths(): WorkspaceHostPaths {
+    return workspaceHostPaths(this.workspace, this.bootstrap, this.env);
+  }
+
   protected async load(): Promise<AgentProfileContribution> {
     const roots = await userAgentRoots(
       this.fs,
-      this.bootstrap.homeDir,
-      this.bootstrap.osHomeDir,
+      this.paths.homeDir,
+      this.paths.osHomeDir,
       (message, error) => {
         this.log.warn(message, error);
       },
     );
     const systemMd = await loadSystemMdProfile(
       this.fs,
-      this.bootstrap.homeDir,
+      this.paths.homeDir,
       this.builtin.getDefault(),
       (message) => this.log.warn(message),
     );

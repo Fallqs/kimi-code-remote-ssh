@@ -12,6 +12,10 @@ import { IHostFsWatchService, type HostFsChange } from '#/os/interface/hostFsWat
 import type { ISessionInstructionsProvider } from '#/session/sessionInstructions/instructionsProvider';
 import { IWorkspaceStateService } from '#/workspace/state/workspaceState';
 import { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
+import {
+  workspaceHostPaths,
+  type WorkspaceHostPaths,
+} from '#/workspace/workspaceContext/workspaceHostPaths';
 
 import {
   IWorkspaceInstructionsService,
@@ -66,12 +70,16 @@ export class WorkspaceInstructionsService
     return this.current;
   }
 
+  private get paths(): WorkspaceHostPaths {
+    return workspaceHostPaths(this.workspace, this.bootstrap, this.env);
+  }
+
   reload(): Promise<void> {
     const tail = this.reloadTail.catch(() => undefined).then(async () => {
       const result = await loadAgentsMdForRoots(
         { fs: this.fs, homeDir: this.env.homeDir },
-        this.bootstrap.homeDir,
-        [this.workspace.cwd],
+        this.paths.homeDir,
+        [this.paths.cwd],
       );
       const next: WorkspaceInstructionsSnapshot = {
         agentsMd: result.content,
@@ -117,8 +125,8 @@ export class WorkspaceInstructionsService
   private async watchCandidateFiles(): Promise<void> {
     const plan = await agentsMdWatchRoots(
       { fs: this.fs, homeDir: this.env.homeDir },
-      this.workspace.cwd,
-      this.bootstrap.homeDir,
+      this.paths.cwd,
+      this.paths.homeDir,
     );
     for (const { root, candidates } of plan) {
       try {

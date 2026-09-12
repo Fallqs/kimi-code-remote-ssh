@@ -16,7 +16,12 @@ import { IUserAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
+import { IHostEnvironment, type HostEnvironmentInfo } from '#/os/interface/hostEnvironment';
 import { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
+import {
+  workspaceHostPaths,
+  type WorkspaceHostPaths,
+} from '#/workspace/workspaceContext/workspaceHostPaths';
 
 import { IExtraAgentProfileLoader } from './extraAgentProfileLoader';
 
@@ -33,6 +38,7 @@ export class ExtraAgentProfileLoaderService
     @IConfigService private readonly configService: IConfigService,
     @IWorkspaceContext private readonly workspace: IWorkspaceContext,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
+    @IHostEnvironment private readonly env: HostEnvironmentInfo,
     @IHostFileSystem private readonly fs: IHostFileSystem,
     @ILogService log: ILogService,
     @IUserAgentProfileLoader private readonly user: IUserAgentProfileLoader,
@@ -55,6 +61,10 @@ export class ExtraAgentProfileLoaderService
     return this.workspace.workspaceId;
   }
 
+  private get paths(): WorkspaceHostPaths {
+    return workspaceHostPaths(this.workspace, this.bootstrap, this.env);
+  }
+
   protected async load(): Promise<AgentProfileContribution> {
     await this.configService.ready;
     const dirs = this.configService.get<ExtraAgentDirsConfig>(EXTRA_AGENT_DIRS_SECTION) ?? [];
@@ -64,8 +74,8 @@ export class ExtraAgentProfileLoaderService
         await configuredAgentRoots(
           this.fs,
           dirs,
-          this.workspace.cwd,
-          this.bootstrap.osHomeDir,
+          this.paths.cwd,
+          this.paths.osHomeDir,
           'extra',
           (message, error) => {
             this.log.warn(message, error);

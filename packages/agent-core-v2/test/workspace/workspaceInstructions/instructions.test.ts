@@ -1,5 +1,5 @@
 import { mkdtempSync } from 'node:fs';
-import { rm, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 
@@ -75,7 +75,7 @@ describe('WorkspaceInstructionsService', () => {
     }
   }
 
-  function createService(): {
+  function createService(workspace?: { cwd: string; remoteCwd?: string }): {
     service: IWorkspaceInstructionsService;
     states: IWorkspaceStateService;
   } {
@@ -83,7 +83,7 @@ describe('WorkspaceInstructionsService', () => {
       strict: true,
       additionalServices: (reg) => {
         registerStateServices(reg);
-        reg.definePartialInstance(IWorkspaceContext, { cwd: workDir });
+        reg.definePartialInstance(IWorkspaceContext, workspace ?? { cwd: workDir });
         reg.defineInstance(IHostFileSystem, new HostFileSystem());
         reg.definePartialInstance(IHostEnvironment, { homeDir: osHomeDir });
         reg.definePartialInstance(IBootstrapService, { homeDir: brandHomeDir });
@@ -107,6 +107,25 @@ describe('WorkspaceInstructionsService', () => {
     const provider = service.sessionProvider();
     expect(provider.agentsMd).toBe(service.snapshot.agentsMd);
     expect(provider.agentsMdWarning).toBeUndefined();
+  });
+
+  it('loads AGENTS.md from the remote root and remote home in ssh workspaces', async () => {
+    const remoteBrandHome = join(osHomeDir, '.kimi-code');
+    await mkdir(remoteBrandHome, { recursive: true });
+    await writeFile(join(remoteBrandHome, 'AGENTS.md'), 'remote brand instructions', 'utf8');
+    await writeFile(join(workDir, 'AGENTS.md'), 'remote project instructions', 'utf8');
+    await writeFile(join(brandHomeDir, 'AGENTS.md'), 'local brand instructions', 'utf8');
+
+    const { service } = createService({
+      cwd: 'ssh://net150/volume/xdma/projects/rix',
+      remoteCwd: workDir,
+    });
+    await service.ready;
+
+    expect(service.snapshot.agentsMd).toContain('remote brand instructions');
+    expect(service.snapshot.agentsMd).toContain('remote project instructions');
+    expect(service.snapshot.agentsMd).not.toContain('local brand instructions');
+    expect(service.snapshot.agentsMdWarning).toBeUndefined();
   });
 
   it('does not fire onDidChange for the initial load', async () => {

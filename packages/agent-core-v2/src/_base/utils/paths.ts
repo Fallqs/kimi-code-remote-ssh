@@ -35,11 +35,15 @@ export interface UpwardRootPathApi {
   join(...segments: string[]): string;
 }
 
+function defaultUpwardPathApi(workDir: string): UpwardRootPathApi {
+  return workDir.startsWith('/') && !isWindowsAbsolutePath(workDir) ? nodePath.posix : nodePath;
+}
+
 export async function findUpwardRoot(
   workDir: string,
   markerName: string,
   hasMarker: (markerPath: string) => Promise<boolean>,
-  pathApi: UpwardRootPathApi = nodePath,
+  pathApi: UpwardRootPathApi = defaultUpwardPathApi(workDir),
 ): Promise<string> {
   const start = pathApi.resolve(workDir);
   let current = start;

@@ -48,9 +48,13 @@ export class WorkspaceAgentProfileLoaderService
     return this.workspace.workspaceId;
   }
 
+  private get cwd(): string {
+    return this.workspace.remoteCwd ?? this.workspace.cwd;
+  }
+
   protected async load(): Promise<AgentProfileContribution> {
     await this.watchReady;
-    const roots = await projectAgentRoots(this.fs, this.workspace.cwd, (message, error) => {
+    const roots = await projectAgentRoots(this.fs, this.cwd, (message, error) => {
       this.log.warn(message, error);
     });
     return profilesFromDiscovery(
@@ -62,7 +66,7 @@ export class WorkspaceAgentProfileLoaderService
   private async watchProjectAgentRoots(): Promise<void> {
     const { projectRoot, candidates } = await projectAgentRootCandidates(
       this.fs,
-      this.workspace.cwd,
+      this.cwd,
       (message) => this.log.warn(message),
     );
     const handle = this.fsWatch.watch(projectRoot, {

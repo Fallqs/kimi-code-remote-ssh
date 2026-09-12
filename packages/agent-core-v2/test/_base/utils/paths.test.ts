@@ -151,6 +151,22 @@ describe('findUpwardRoot', () => {
     expect(found).toBe('E:/');
   });
 
+  it('walks POSIX-absolute working directories with posix semantics on any host', async () => {
+    const found = await findUpwardRoot(
+      '/remote/repo/src/pkg',
+      '.git',
+      async (markerPath) => markerPath === '/remote/repo/.git',
+    );
+
+    expect(found).toBe('/remote/repo');
+  });
+
+  it('keeps a POSIX-absolute working directory when no ancestor holds the marker', async () => {
+    const found = await findUpwardRoot('/remote/repo/src/pkg', '.git', noMarker);
+
+    expect(found).toBe('/remote/repo/src/pkg');
+  });
+
   it('keeps a Windows UNC working directory in host form', async () => {
     const found = await findUpwardRoot('\\\\fs1\\share\\dir', '.git', noMarker, win32);
 

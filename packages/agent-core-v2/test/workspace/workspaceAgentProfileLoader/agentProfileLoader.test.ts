@@ -35,6 +35,7 @@ import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { HostFsWatchService } from '#/os/backends/node-local/hostFsWatchService';
 import { HostFsError, OsFsErrors } from '#/os/interface/hostFsErrors';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
+import { IHostEnvironment, type HostEnvironmentInfo } from '#/os/interface/hostEnvironment';
 import {
   IHostFsWatchService,
   type HostFsChange,
@@ -95,12 +96,13 @@ function configStub(): IConfigService & {
   };
 }
 
-function workspaceContextStub(workDir: string): IWorkspaceContext {
+function workspaceContextStub(workDir: string, remoteCwd?: string): IWorkspaceContext {
   return {
     _serviceBrand: undefined,
     workspaceId: 'wd_test',
     cwd: workDir,
-    source: 'local',
+    source: remoteCwd === undefined ? 'local' : 'ssh',
+    remoteCwd,
     meta: { id: 'wd_test', root: workDir, name: 'test', createdAt: 0, lastOpenedAt: 0 },
     persistenceScope: 'sessions/wd_test',
   };
@@ -233,6 +235,7 @@ interface StackOptions {
   readonly pluginReloadEmitter?: Emitter<PluginReloadEvent>;
   readonly hostFs?: HostFileSystem;
   readonly fsWatch?: IHostFsWatchService;
+  readonly remoteCwd?: string;
 }
 
 function makeStack(fixture: Fixture, opts?: StackOptions) {
@@ -244,8 +247,15 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
     ...stubBootstrap(fixture.homeDir, {}, { agentFiles: opts?.explicitFiles }),
     osHomeDir: fixture.osHomeDir,
   };
+  const env = {
+    _serviceBrand: undefined,
+    homeDir: fixture.osHomeDir,
+  } as unknown as HostEnvironmentInfo;
   const hostFs = opts?.hostFs ?? new HostFileSystem();
-  const workspaceContext = workspaceContextStub(fixture.workDir);
+  const workspaceContext =
+    opts?.remoteCwd === undefined
+      ? workspaceContextStub(fixture.workDir)
+      : workspaceContextStub('ssh://net150/volume/xdma/projects/rix', opts.remoteCwd);
 
   const container = new InstantiationService(
     new ServiceCollection(
@@ -253,6 +263,7 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
       [IConfigService, config],
       [IBootstrapService, bootstrap],
       [IHostFileSystem, hostFs],
+      [IHostEnvironment, env],
       [IHostFsWatchService, opts?.fsWatch ?? fsWatchStub()],
       [IWorkspaceContext, workspaceContext],
       [IPluginService, pluginStub(opts?.pluginAgentRoots ?? [], opts?.pluginReloadEmitter)],
@@ -509,6 +520,51 @@ describe('agent profile loaders + session catalog', () => {
 
         expect(stack.catalog.get('solo')?.description).toBe('relative explicit');
       });
+    });
+  });
+
+  it('loads profiles from the remote root and remote home in ssh workspaces', async () => {
+    await withFixture(async (fixture) => {
+      const remoteBrandHome = join(fixture.osHomeDir, '.kimi-code');
+      await writeAgent(
+        join(remoteBrandHome, 'agents'),
+        'remote-user.md',
+        agentMd('remote-user', 'remote user agent'),
+      );
+      await writeFile(join(remoteBrandHome, 'SYSTEM.md'), 'remote system prompt');
+      await writeAgent(
+        join(fixture.workDir, '.kimi-code', 'agents'),
+        'remote-project.md',
+        agentMd('remote-project', 'remote project agent'),
+      );
+      await writeAgent(
+        join(fixture.workDir, 'team-agents'),
+        'remote-extra.md',
+        agentMd('remote-extra', 'remote extra agent'),
+      );
+      await writeAgent(
+        fixture.workDir,
+        'explicit.md',
+        agentMd('remote-explicit', 'remote explicit agent'),
+      );
+      await withStack(
+        fixture,
+        {
+          remoteCwd: fixture.workDir,
+          extraAgentDirs: ['team-agents'],
+          explicitFiles: ['explicit.md'],
+        },
+        async (stack) => {
+          await stack.ready();
+
+          expect(stack.catalog.get('remote-user')?.description).toBe('remote user agent');
+          expect(stack.catalog.get('remote-project')?.description).toBe('remote project agent');
+          expect(stack.catalog.get('remote-extra')?.description).toBe('remote extra agent');
+          expect(stack.catalog.get('remote-explicit')?.description).toBe('remote explicit agent');
+          expect(stack.catalog.getDefault().systemPrompt({})).toContain('remote system prompt');
+          expect(stack.warnings.some((warning) => warning.includes('ssh:'))).toBe(false);
+        },
+      );
     });
   });
 

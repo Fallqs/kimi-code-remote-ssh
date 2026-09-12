@@ -12,7 +12,12 @@ import { resolveAgentPath } from '#/workspace/workspaceAgentProfileLoader/intern
 import { IUserAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/userAgentProfileLoader';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
+import { IHostEnvironment, type HostEnvironmentInfo } from '#/os/interface/hostEnvironment';
 import { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
+import {
+  workspaceHostPaths,
+  type WorkspaceHostPaths,
+} from '#/workspace/workspaceContext/workspaceHostPaths';
 
 import { IExplicitAgentProfileLoader } from './explicitAgentProfileLoader';
 
@@ -29,6 +34,7 @@ export class ExplicitAgentProfileLoaderService
   constructor(
     @IWorkspaceContext private readonly workspace: IWorkspaceContext,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
+    @IHostEnvironment private readonly env: HostEnvironmentInfo,
     @IHostFileSystem private readonly fs: IHostFileSystem,
     @ILogService log: ILogService,
     @IUserAgentProfileLoader private readonly user: IUserAgentProfileLoader,
@@ -42,11 +48,15 @@ export class ExplicitAgentProfileLoaderService
     return this.workspace.workspaceId;
   }
 
+  private get paths(): WorkspaceHostPaths {
+    return workspaceHostPaths(this.workspace, this.bootstrap, this.env);
+  }
+
   protected async load(): Promise<AgentProfileContribution> {
     const files = this.bootstrap.args.agentFiles ?? [];
     const profiles: AgentProfile[] = [];
     for (const file of files) {
-      const filePath = resolveAgentPath(file, this.workspace.cwd, this.bootstrap.osHomeDir);
+      const filePath = resolveAgentPath(file, this.paths.cwd, this.paths.osHomeDir);
       const text = await this.fs.readText(filePath);
       profiles.push(
         agentProfileFromFile(
