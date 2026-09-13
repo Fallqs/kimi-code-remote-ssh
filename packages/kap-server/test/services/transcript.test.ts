@@ -50,6 +50,7 @@ import { describe, expect, it } from 'vitest';
 
 import { bindSessionTranscript } from '../../src/services/transcript/coreBinding';
 import { toWireQuestion } from '../../src/protocol/question-wire';
+import { IShadowAliasService } from '../../src/shadowAlias';
 import {
   AgentTranscriptProjector,
   type ProjectorBusEvent,
@@ -4210,6 +4211,148 @@ describe('bindSessionTranscript', () => {
         Array.from({ length: 10 }, (_, i) => watermark - 9 + i),
       );
       service.dropSession('s1');
+    });
+  });
+
+  describe('shadow aliasing', () => {
+    function fakeAlias(mainToShadow: Record<string, string>): IShadowAliasService {
+      const shadowToMain = Object.fromEntries(
+        Object.entries(mainToShadow).map(([main, shadow]) => [shadow, main]),
+      );
+      return {
+        effectiveId: (id: string) => mainToShadow[id] ?? id,
+        presentedId: (id: string) => shadowToMain[id] ?? id,
+        isShadowId: (id: string) => id in shadowToMain,
+        isShadowed: (id: string) => id in mainToShadow,
+        noteSwitch: () => undefined,
+      } as unknown as IShadowAliasService;
+    }
+
+    function fakeCoreWithAlias(
+      sessions: ReadonlyMap<string, FakeAgents>,
+      alias: IShadowAliasService,
+    ): Scope {
+      const sessionLifecycle = {
+        onDidCloseSession: () => ({ dispose: () => undefined }),
+        onDidArchiveSession: () => ({ dispose: () => undefined }),
+        get: (sid: string) => {
+          const agents = sessions.get(sid);
+          return agents === undefined ? undefined : fakeSession(agents);
+        },
+      };
+      const handler = {
+        id: 'ws',
+        kind: 'program',
+        accessor: {
+          get: (t: unknown) => (t === ISessionLifecycleService ? sessionLifecycle : undefined),
+        },
+        dispose: () => undefined,
+      };
+      return {
+        accessor: {
+          get: (token: unknown) => {
+            if (token === ISessionManager) {
+              return {
+                get: sessionLifecycle.get,
+                list: () => [...sessions.keys()].map((sid) => sessionLifecycle.get(sid)),
+              };
+            }
+            if (token === IWorkspaceInstanceManager) {
+              return {
+                list: () => [{ program: { accessor: handler.accessor } }],
+                onDidChange: () => ({ dispose: () => undefined }),
+              };
+            }
+            if (token === ISessionIndex) return { get: async () => ({ workspaceId: 'ws' }) };
+            if (token === IShadowAliasService) return alias;
+            return undefined;
+          },
+        },
+      } as unknown as Scope;
+    }
+
+    function shadowCore(homeDir = '/nonexistent-home'): {
+      service: TranscriptService;
+      shadowMain: FakeAgentHandle;
+    } {
+      const source = new FakeAgents();
+      source.add('main');
+      const shadow = new FakeAgents();
+      const shadowMain = shadow.add('main');
+      const service = new TranscriptService({
+        homeDir,
+        core: fakeCoreWithAlias(
+          new Map([
+            ['s1', source],
+            ['shadow-1', shadow],
+          ]),
+          fakeAlias({ s1: 'shadow-1' }),
+        ),
+      });
+      return { service, shadowMain };
+    }
+
+    it('resolves the active shadow for client-facing live reads and hides the shadow id', async () => {
+      const { service, shadowMain } = shadowCore();
+
+      expect(service.forSessionLive('shadow-1')).toBeUndefined();
+      expect(service.onSessionOps('shadow-1', () => undefined)).toBeUndefined();
+      expect(service.getSeqWatermark('shadow-1', 'main')).toBe(0);
+      expect(service.getOpsSince('shadow-1', 'main', 0)).toBeUndefined();
+
+      const store = service.forSessionLive('s1');
+      expect(store).toBeDefined();
+      expect(service.forSessionLive('s1')).toBe(store);
+
+      const batches: TranscriptOperation[][] = [];
+      service.onSessionOps('s1', (event) => batches.push([...event.ops]));
+      shadowMain.bus.emit(ev({ type: 'turn.started', turnId: 0, origin: { kind: 'user' } }));
+      expect(store?.getAgent('main')?.getTurn('t0')).toBeDefined();
+      expect(batches.length).toBeGreaterThan(0);
+      service.dropSession('s1');
+    });
+
+    it('dropSession discards both the client-facing and the shadow engine entries', async () => {
+      const { service } = shadowCore();
+
+      const first = service.forSessionLive('s1');
+      expect(first).toBeDefined();
+      service.dropSession('s1');
+      const second = service.forSessionLive('s1');
+      expect(second).toBeDefined();
+      expect(second).not.toBe(first);
+      service.dropSession('s1');
+    });
+
+    it('cold reads follow the alias to the shadow session files', async () => {
+      const home = await mkdtemp(join(tmpdir(), 'transcript-shadow-cold-'));
+      try {
+        const wireDir = join(home, 'sessions', 'ws', 'shadow-1', 'agents', 'main');
+        await mkdir(wireDir, { recursive: true });
+        const records = [
+          {
+            type: 'context.append_message',
+            message: {
+              role: 'user',
+              content: [{ type: 'text', text: 'from the shadow' }],
+              toolCalls: [],
+              origin: { kind: 'user' },
+            },
+            time: 1000,
+          },
+        ];
+        await writeFile(
+          join(wireDir, 'wire.jsonl'),
+          `${records.map((r) => JSON.stringify(r)).join('\n')}\n`,
+        );
+
+        const { service } = shadowCore(home);
+        const snapshot = await service.readColdSnapshot('s1', 'main');
+        expect(JSON.stringify(snapshot?.items)).toContain('from the shadow');
+        service.dropSession('s1');
+      } finally {
+        await rm(home, { recursive: true, force: true });
+      }
     });
   });
 });

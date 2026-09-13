@@ -816,6 +816,9 @@ export class SessionEventBroadcaster {
       const engineId = alias.effectiveId(clientId);
       const existing = this.sessions.get(clientId);
       if (existing !== undefined && existing.engineSessionId === engineId) return;
+      const transcript = this.opts.transcriptService;
+      transcript?.dropSession(payload.fromSessionId);
+      transcript?.dropSession(payload.toSessionId);
       const staleEngineState = this.sessions.get(payload.toSessionId);
       if (staleEngineState !== undefined && staleEngineState !== existing) {
         this.sessions.delete(payload.toSessionId);

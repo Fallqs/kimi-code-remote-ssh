@@ -3145,6 +3145,44 @@ describe('SessionEventBroadcaster', () => {
         started.map((entry) => (entry.envelope.payload as { turnId: number }).turnId),
       ).toEqual([1, 2]);
     });
+
+    it('rebuilds the transcript store from the switched-to engine across enter and exit', async () => {
+      const source = new FakeLifecycle();
+      source.addAgent('main');
+      sessions.set('s1', source);
+      const shadow = new FakeLifecycle();
+      shadow.addAgent('main');
+      sessions.set('shadow-1', shadow);
+
+      const core = makeCore(sessions, eventBus, {}, alias);
+      const transcript = new TranscriptService({ homeDir: dir, core });
+      bc = new SessionEventBroadcaster({
+        eventsDir: dir,
+        core,
+        maxBufferSize: 3,
+        transcriptService: transcript,
+      });
+
+      const before = transcript.forSessionLive('s1');
+      expect(before).toBeDefined();
+
+      const view = collectingTarget();
+      await bc.subscribe('s1', view.target, undefined, { '*': 'turn' });
+      expect(transcript.forSessionLive('s1')).toBe(before);
+
+      eventBus.emit(switchEvent('enter', 's1', 'shadow-1'));
+      await bc.getCursor('s1');
+      const during = transcript.forSessionLive('s1');
+      expect(during).toBeDefined();
+      expect(during).not.toBe(before);
+
+      eventBus.emit(switchEvent('exit', 'shadow-1', 's1'));
+      await bc.getCursor('s1');
+      const after = transcript.forSessionLive('s1');
+      expect(after).toBeDefined();
+      expect(after).not.toBe(before);
+      expect(after).not.toBe(during);
+    });
   });
 });
 
