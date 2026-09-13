@@ -118,20 +118,27 @@ export async function findExistingRg(
   if (probed.exitCode === 0) return { path: 'rg', source: 'system-path' };
 
   const system = await findRgOnPath();
-  if (system !== undefined) return { path: system, source: 'system-path' };
+  if (system !== undefined && (await probeRuns(probe, system))) {
+    return { path: system, source: 'system-path' };
+  }
 
   if (allowCachedFallback) {
     const vendorPath = getVendorRgPath(rgBinaryName());
-    if (vendorPath !== undefined && (await isExecutableFile(vendorPath))) {
+    if (vendorPath !== undefined && (await probeRuns(probe, vendorPath))) {
       return { path: vendorPath, source: 'vendor' };
     }
     const cachePath = join(shareDir, 'bin', rgBinaryName());
-    if (await isExecutableFile(cachePath)) {
+    if ((await isExecutableFile(cachePath)) && (await probeRuns(probe, cachePath))) {
       return { path: cachePath, source: 'share-bin-cached' };
     }
   }
 
   return undefined;
+}
+
+async function probeRuns(probe: RgProbe, path: string): Promise<boolean> {
+  const run = await probe.exec([path, '--version']).catch(() => ({ exitCode: -1 }));
+  return run.exitCode === 0;
 }
 
 let downloadPromise: Promise<RgResolution> | undefined;
@@ -142,6 +149,12 @@ async function downloadRgWithLock(probe: RgProbe, shareDir: string): Promise<RgR
       const existing = await findExistingRg(probe, shareDir, true);
       if (existing) return existing;
       const binPath = await downloadAndInstallRg(shareDir);
+      if (!(await probeRuns(probe, binPath))) {
+        throw new Error2(
+          ErrorCodes.OS_FS_UNAVAILABLE,
+          `ripgrep was installed at ${binPath} but does not run in the workspace runtime`,
+        );
+      }
       return { path: binPath, source: 'share-bin-downloaded' };
     } finally {
       downloadPromise = undefined;

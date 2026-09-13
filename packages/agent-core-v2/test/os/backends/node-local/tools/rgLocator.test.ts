@@ -71,11 +71,12 @@ describe('findExistingRg', () => {
   it('resolves from share-dir when cached and the probe misses', async () => {
     const cached = join(fakeShare, 'bin', process.platform === 'win32' ? 'rg.exe' : 'rg');
     writeFileSync(cached, 'fake rg');
-    const probe = noRgProbe();
+    const probe = probeWith((args) => (args[0] === 'rg' ? -1 : 0));
     const result = await findExistingRg(probe, fakeShare);
 
     expect(result).toEqual({ path: cached, source: 'share-bin-cached' });
     expect(probe.exec).toHaveBeenCalledWith(['rg', '--version']);
+    expect(probe.exec).toHaveBeenCalledWith([cached, '--version']);
   });
 
   it('resolves the bare rg name when the spawn-environment probe succeeds', async () => {
@@ -97,7 +98,13 @@ describe('findExistingRg', () => {
   it('falls back to the local chain when the probe rejects', async () => {
     const cached = join(fakeShare, 'bin', process.platform === 'win32' ? 'rg.exe' : 'rg');
     writeFileSync(cached, 'fake rg');
-    const probe = { exec: vi.fn(() => Promise.reject(new Error('spawn failed'))) };
+    const probe = {
+      exec: vi.fn((args: readonly string[]) =>
+        args[0] === 'rg'
+          ? Promise.reject(new Error('spawn failed'))
+          : Promise.resolve({ exitCode: 0 }),
+      ),
+    };
     const result = await findExistingRg(probe, fakeShare);
 
     expect(result).toEqual({ path: cached, source: 'share-bin-cached' });
@@ -111,11 +118,24 @@ describe('findExistingRg', () => {
     writeFileSync(systemRg, 'fake system rg');
     writeFileSync(cached, 'fake cached rg');
     process.env['PATH'] = binDir;
-    const probe = noRgProbe();
+    const probe = probeWith((args) => (args[0] === systemRg ? 0 : -1));
     const result = await findExistingRg(probe, fakeShare);
 
     expect(result).toEqual({ path: systemRg, source: 'system-path' });
     expect(probe.exec).toHaveBeenCalledWith(['rg', '--version']);
+  });
+
+  it('rejects local fallback paths that do not run under the probe (remote runtime)', async () => {
+    const binDir = join(fakeShare, 'path-bin');
+    mkdirSync(binDir, { recursive: true });
+    const systemRg = join(binDir, process.platform === 'win32' ? 'rg.exe' : 'rg');
+    const cached = join(fakeShare, 'bin', process.platform === 'win32' ? 'rg.exe' : 'rg');
+    writeFileSync(systemRg, 'fake system rg');
+    writeFileSync(cached, 'fake cached rg');
+    process.env['PATH'] = binDir;
+    const result = await findExistingRg(noRgProbe(), fakeShare);
+
+    expect(result).toBeUndefined();
   });
 });
 

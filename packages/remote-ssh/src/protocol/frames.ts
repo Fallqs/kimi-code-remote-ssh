@@ -6,7 +6,7 @@
  */
 
 export const RTS_PROTOCOL = 1;
-export const RTS_VERSION = '0.2.0';
+export const RTS_VERSION = '0.3.0';
 
 /** Remote host facts probed by the server and sent in the hello frame. */
 export interface RemoteFacts {
