@@ -44,7 +44,7 @@ export const EditInputSchema = z.object({
   path: z
     .string()
     .describe(
-      'Path to the text file to edit. Relative paths resolve against the working directory; a path outside the working directory must be absolute.',
+      'Path to the text file to edit. Relative paths resolve against the working directory.',
     ),
   old_string: z
     .string()

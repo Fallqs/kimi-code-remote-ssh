@@ -60,20 +60,19 @@ describe('path access policy', () => {
     expect(result).toEqual({ path: '/etc/hosts', outsideWorkspace: true });
   });
 
-  it('default policy rejects relative paths that escape workspace roots', () => {
-    expect(() =>
-      resolvePathAccess('../../outside.txt', '/workspace/project', WORKSPACE, {
-        operation: 'read',
-        policy: DEFAULT_WORKSPACE_ACCESS_POLICY,
-      }),
-    ).toThrow(/absolute path/);
+  it('default policy resolves relative paths that escape workspace roots', () => {
+    const result = resolvePathAccess('../../outside.txt', '/workspace/project', WORKSPACE, {
+      operation: 'read',
+      policy: DEFAULT_WORKSPACE_ACCESS_POLICY,
+    });
+    expect(result).toEqual({ path: '/outside.txt', outsideWorkspace: true });
   });
 
   it('does not duplicate outside-working-directory wording for search paths', () => {
     try {
       resolvePathAccess('../../outside.txt', '/workspace/project', WORKSPACE, {
         operation: 'search',
-        policy: DEFAULT_WORKSPACE_ACCESS_POLICY,
+        policy: { guardMode: 'absolute-outside-allowed', checkSensitive: true },
       });
     } catch (error) {
       expect(error).toBeInstanceOf(PathSecurityError);
@@ -87,14 +86,6 @@ describe('path access policy', () => {
     }
 
     throw new Error('Expected resolvePathAccess to reject escaping relative search path');
-  });
-
-  it('disabled policy allows relative paths that escape workspace roots', () => {
-    const result = resolvePathAccess('../../outside.txt', '/workspace/project', WORKSPACE, {
-      operation: 'read',
-      policy: { guardMode: 'disabled', checkSensitive: true },
-    });
-    expect(result).toEqual({ path: '/outside.txt', outsideWorkspace: true });
   });
 
   it('expands leading tilde paths against the provided home directory', () => {

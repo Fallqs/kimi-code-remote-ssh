@@ -4,7 +4,7 @@ If the user provides a concrete file path to a text file, call Read directly. Do
 
 When you need several files, prefer to read them in parallel: emit multiple `Read` calls in a single response instead of reading one file per turn.
 
-- Relative paths resolve against the working directory; a path outside the working directory must be absolute.
+- Relative paths resolve against the working directory.
 - Returns up to ${MAX_LINES} lines or ${MAX_BYTES_KB} KB per call, whichever comes first; lines longer than ${MAX_LINE_LENGTH} chars are truncated mid-line (recover the elided content with Bash, e.g. `cut` or `sed`).
 - Page larger files with `line_offset` (1-based start line) and `n_lines`. Omit `n_lines` to read up to the ${MAX_LINES}-line cap.
 - Sensitive files (`.env` files, credential stores, SSH private keys, and similar secrets) are refused to protect secrets; do not attempt to read them. Templates and public keys are exempt: `.env.example` / `.env.sample` / `.env.template` and public SSH keys such as `id_rsa.pub` read normally.

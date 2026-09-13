@@ -330,18 +330,16 @@ describe('GlobTool', () => {
       expect(result.output).toContain('/skills/feishu/scripts/read_content.py');
     });
 
-    it('rejects a relative path that escapes both workspace and additionalDirs', async () => {
-      const exec = vi.fn();
-      const tool = new GlobTool(createFakeKaos({ exec }), {
+    it('resolves a relative path that escapes both workspace and additionalDirs', async () => {
+      const exec = execReturning('/tmp/evil/main.py\n');
+      const tool = new GlobTool(kaosWithExec(exec), {
         workspaceDir: '/workspace/project',
         additionalDirs: ['/skills'],
       });
 
       const result = await executeTool(tool, context({ pattern: '*.py', path: '../../tmp/evil' }));
 
-      expect(result).toMatchObject({ isError: true });
-      expect(result.output).toContain('absolute path');
-      expect(exec).not.toHaveBeenCalled();
+      expect(result.output).toContain('/tmp/evil/main.py');
     });
 
     it('accepts a path inside a deeply nested additionalDir entry', async () => {

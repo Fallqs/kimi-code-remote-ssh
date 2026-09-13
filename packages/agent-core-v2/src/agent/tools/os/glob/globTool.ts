@@ -95,7 +95,7 @@ export class GlobTool implements IGlobTool {
         env,
         workspace,
         operation: 'search',
-        policy: { guardMode: 'absolute-outside-allowed', checkSensitive: false },
+        policy: { guardMode: 'disabled', checkSensitive: false },
       });
     }
     const searchRoots = [path ?? workspace.workspaceDir];

@@ -801,8 +801,8 @@ describe('GrepTool', () => {
     });
   });
 
-  it('rejects relative path escapes before spawning ripgrep', async () => {
-    const exec = vi.fn();
+  it('resolves relative path escapes against the workspace dir', async () => {
+    const exec = vi.fn().mockResolvedValue(processWithOutput('/workspace/outside/a.ts\n'));
     const tool = new GrepTool(createFakeKaos({ exec }), {
       workspaceDir: '/workspace/project',
       additionalDirs: [],
@@ -810,9 +810,16 @@ describe('GrepTool', () => {
 
     const result = await executeTool(tool, context({ pattern: 'hit', path: '../outside' }));
 
-    expect(result).toMatchObject({ isError: true });
-    expect(result.output).toContain('absolute path');
-    expect(exec).not.toHaveBeenCalled();
+    expect(exec).toHaveBeenCalledWith(
+      '/mock/rg',
+      ...DEFAULT_RG_ARGS,
+      '-l',
+      ...SENSITIVE_RG_ARGS,
+      '--',
+      'hit',
+      '/workspace/outside',
+    );
+    expect(result.isError).not.toBe(true);
   });
 
   it('appends sensitive prefilter globs after user glob filters', async () => {

@@ -535,8 +535,8 @@ describe('GlobTool', () => {
       withCwd.toHaveBeenCalledWith('/skills/feishu/scripts');
     });
 
-    it('rejects a relative path that escapes both workspace and additionalDirs', async () => {
-      const exec = vi.fn();
+    it('resolves a relative path that escapes both workspace and additionalDirs', async () => {
+      const exec = execReturning('/tmp/evil/main.py\n');
       const { tool, withCwd } = makeTool(
         stubWorkspaceContext('/workspace/project', ['/skills']),
         { exec },
@@ -544,10 +544,8 @@ describe('GlobTool', () => {
 
       const result = await execute(tool, { pattern: '*.py', path: '../../tmp/evil' });
 
-      expect(result).toMatchObject({ isError: true });
-      expect(result.output).toContain('absolute path');
-      expect(exec).not.toHaveBeenCalled();
-      withCwd.not.toHaveBeenCalled();
+      expect(result.output).toContain('/tmp/evil/main.py');
+      withCwd.toHaveBeenCalledWith('/tmp/evil');
     });
 
     it('accepts a path inside a deeply nested additionalDir entry', async () => {

@@ -322,7 +322,7 @@ describe('WriteTool', () => {
     expect(writeText).toHaveBeenCalledWith('/tmp/pwned.txt', 'x');
   });
 
-  it('rejects relative traversal writes before fs I/O', async () => {
+  it('resolves relative traversal writes against the working directory', async () => {
     const { tool, writeText } = makeTool(
       {},
       stubWorkspaceContext('/workspace/project'),
@@ -330,9 +330,8 @@ describe('WriteTool', () => {
 
     const result = await execute(tool, { path: '../outside.txt', content: 'x' });
 
-    expect(result).toMatchObject({ isError: true });
-    expect(result.output).toContain('absolute path');
-    expect(writeText).not.toHaveBeenCalled();
+    expect(result.isError).toBeUndefined();
+    expect(writeText).toHaveBeenCalledWith('/workspace/outside.txt', 'x');
   });
 
   it('blocks sensitive file writes', async () => {

@@ -222,18 +222,17 @@ describe('WriteTool', () => {
     expect(writeText).toHaveBeenCalledWith('/tmp/pwned.txt', 'x');
   });
 
-  it('rejects relative traversal writes before kaos I/O', async () => {
+  it('resolves relative traversal writes against the working directory', async () => {
     const writeText = vi.fn().mockResolvedValue(1);
-    const tool = new WriteTool(createFakeKaos({ writeText }), {
+    const tool = new WriteTool(createFakeKaos({ writeText, stat: DIR_STAT }), {
       workspaceDir: '/workspace/project',
       additionalDirs: [],
     });
 
     const result = await executeTool(tool, context({ path: '../outside.txt', content: 'x' }));
 
-    expect(result).toMatchObject({ isError: true });
-    expect(result.output).toContain('absolute path');
-    expect(writeText).not.toHaveBeenCalled();
+    expect(result.isError).toBeUndefined();
+    expect(writeText).toHaveBeenCalledWith('/workspace/outside.txt', 'x');
   });
 
   it('blocks sensitive file writes', async () => {

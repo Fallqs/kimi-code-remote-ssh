@@ -302,15 +302,14 @@ describe('ReadTool', () => {
     );
   });
 
-  it('rejects relative traversal before reading', async () => {
-    const { fs, readText } = createSpiedFs('secret');
+  it('resolves relative traversal against the working directory', async () => {
+    const { fs, stat } = createSpiedFs('secret');
     const tool = createReadTool(fs, createTestEnv(), stubWorkspaceContext('/workspace/project'));
 
     const result = await execute(tool, { path: '../../outside.txt' });
 
-    expect(result).toMatchObject({ isError: true });
-    expect(result.output).toContain('absolute path');
-    expect(readText).not.toHaveBeenCalled();
+    expect(result.isError).not.toBe(true);
+    expect(stat).toHaveBeenCalledWith('/outside.txt');
   });
 
   it('allows relative traversal into a skill root the session catalog provides', async () => {

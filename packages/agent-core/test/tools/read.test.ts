@@ -211,18 +211,30 @@ describe('ReadTool', () => {
     );
   });
 
-  it('rejects relative traversal before reading', async () => {
-    const readText = vi.fn().mockResolvedValue('secret');
-    const tool = new ReadTool(createFakeKaos({ readText }), {
-      workspaceDir: '/workspace/project',
-      additionalDirs: [],
+  it('resolves relative traversal against the working directory', async () => {
+    const content = 'external';
+    const bytes = Buffer.from(content, 'utf8');
+    const readBytes = vi.fn<Kaos['readBytes']>().mockImplementation(async (_path, n) => {
+      return n === undefined ? bytes : bytes.subarray(0, n);
     });
+    const readLines = vi.fn<Kaos['readLines']>().mockImplementation(readLinesFromContent(content));
+    const tool = new ReadTool(
+      createFakeKaos({
+        stat: vi.fn<Kaos['stat']>().mockResolvedValue(REGULAR_FILE_STAT),
+        readBytes,
+        readLines,
+      }),
+      {
+        workspaceDir: '/workspace/project',
+        additionalDirs: [],
+      },
+    );
 
     const result = await executeTool(tool, context({ path: '../../outside.txt' }));
 
-    expect(result).toMatchObject({ isError: true });
-    expect(result.output).toContain('absolute path');
-    expect(readText).not.toHaveBeenCalled();
+    expect(result.isError).toBeUndefined();
+    expect(readBytes).toHaveBeenCalledWith('/outside.txt', MEDIA_SNIFF_BYTES);
+    expect(readLines).toHaveBeenCalledWith('/outside.txt', { errors: 'strict' });
   });
 
   it('allows explicit absolute paths outside the workspace', async () => {

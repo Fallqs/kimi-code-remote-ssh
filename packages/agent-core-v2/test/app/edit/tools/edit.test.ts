@@ -438,7 +438,7 @@ describe('EditTool', () => {
     expect(writeText).not.toHaveBeenCalled();
   });
 
-  it('rejects relative traversal edits before reading', async () => {
+  it('resolves relative traversal edits against the working directory', async () => {
     const readText = vi.fn().mockResolvedValue('secret');
     const { fs } = createSpiedEditFs({ readText });
     const tool = buildTool(fs, createTestEnv(), stubWorkspaceContext('/workspace/project'));
@@ -449,9 +449,8 @@ describe('EditTool', () => {
       new_string: 'x',
     });
 
-    expect(result).toMatchObject({ isError: true });
-    expect(result.output).toContain('absolute path');
-    expect(readText).not.toHaveBeenCalled();
+    expect(result.isError).not.toBe(true);
+    expect(readText).toHaveBeenCalledWith('/workspace/outside.txt', { errors: 'strict' });
   });
 
   it('replaces unicode strings (CJK) and round-trips the surrounding text', async () => {

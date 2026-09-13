@@ -125,7 +125,7 @@ export class GlobTool implements BuiltinTool<GlobInput> {
         kaos: this.kaos,
         workspace: this.workspace,
         operation: 'search',
-        policy: { guardMode: 'absolute-outside-allowed', checkSensitive: false },
+        policy: { guardMode: 'disabled', checkSensitive: false },
       });
     }
     const searchRoots = [path ?? this.workspace.workspaceDir];

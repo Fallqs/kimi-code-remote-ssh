@@ -249,9 +249,10 @@ describe('EditTool', () => {
     expect(writeText).not.toHaveBeenCalled();
   });
 
-  it('rejects relative traversal edits before reading', async () => {
+  it('resolves relative traversal edits against the working directory', async () => {
     const readText = vi.fn().mockResolvedValue('secret');
-    const tool = new EditTool(createFakeKaos({ readText }), {
+    const writeText = vi.fn().mockResolvedValue(0);
+    const tool = new EditTool(createFakeKaos({ readText, writeText }), {
       workspaceDir: '/workspace/project',
       additionalDirs: [],
     });
@@ -260,9 +261,8 @@ describe('EditTool', () => {
       context({ path: '../outside.txt', old_string: 'secret', new_string: 'x' }),
     );
 
-    expect(result).toMatchObject({ isError: true });
-    expect(result.output).toContain('absolute path');
-    expect(readText).not.toHaveBeenCalled();
+    expect(result.isError).toBeUndefined();
+    expect(readText).toHaveBeenCalledWith('/workspace/outside.txt');
   });
 
   it('replaces unicode strings (CJK) and round-trips the surrounding text', async () => {

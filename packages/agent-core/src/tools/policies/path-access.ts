@@ -35,7 +35,7 @@ export interface WorkspaceAccessPolicy {
 }
 
 export const DEFAULT_WORKSPACE_ACCESS_POLICY: WorkspaceAccessPolicy = {
-  guardMode: 'absolute-outside-allowed',
+  guardMode: 'disabled',
   checkSensitive: true,
 };
 
