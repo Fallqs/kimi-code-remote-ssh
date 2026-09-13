@@ -12,6 +12,7 @@ import { turnKey, TurnPrompt } from '#/agent/loop/turnOps';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IEventService } from '#/app/event/event';
 import { IEventBus } from '#/app/event/eventBus';
+import { IFlagService } from '#/app/flag/flag';
 import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IWorkspaceService } from '#/app/workspace/workspace';
@@ -24,17 +25,21 @@ import {
   SHADOW_CREATED_WORKSPACE_METADATA_KEY,
   SHADOW_FORK_POINT_METADATA_KEY,
   SHADOW_OF_METADATA_KEY,
+  SHADOW_ROOT_METADATA_KEY,
   SessionShadowSwitched,
 } from '#/features/shadow/shadowCoordinator';
 import { ShadowSessionCoordinatorService } from '#/features/shadow/shadowCoordinatorService';
 import { IShadowRegistry, ShadowRegistryService } from '#/features/shadow/shadowRegistry';
 import { AgentShadowModeService } from '#/features/shadow/shadowService';
+import { EnterShadowModeInputSchema } from '#/features/shadow/tools/enter-shadow-mode/enter-shadow-mode';
+import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IWireService } from '#/wire/wire';
 import { IWorkspaceInstanceManager } from '#/workspace/workspaceInstance/workspaceInstanceManager';
+import { SSH_WORKDIR_FLAG_ID } from '#/workspace/workspaceSsh/flag';
 
 function sessionContextStub(sessionId: string, cwd: string): ISessionContext {
   return {
@@ -102,6 +107,8 @@ describe('AgentShadowModeService', () => {
   let registerInjection: ReturnType<typeof vi.fn>;
   let registry: ShadowRegistryService;
   let holdCount: number;
+  let stat: ReturnType<typeof vi.fn<(path: string) => Promise<{ isDirectory: boolean }>>>;
+  let flagsEnabled: (id: string) => boolean;
 
   beforeEach(() => {
     disposables = new DisposableStore();
@@ -114,6 +121,8 @@ describe('AgentShadowModeService', () => {
     notify = vi.fn();
     registerInjection = vi.fn(() => ({ dispose: () => {} }));
     holdCount = 0;
+    stat = vi.fn(async (_path: string) => ({ isDirectory: true }));
+    flagsEnabled = () => false;
     registry = new ShadowRegistryService(
       {
         _serviceBrand: undefined,
@@ -128,6 +137,19 @@ describe('AgentShadowModeService', () => {
     ix.stub(ISessionMetadata, sessionMetadataStub(undefined));
     ix.stub(IEventBus, bus.bus);
     ix.stub(IShadowRegistry, registry);
+    ix.stub(IBootstrapService, {
+      _serviceBrand: undefined,
+      homeDir: '/home/user/.kimi-code',
+      osHomeDir: '/home/user',
+    } as unknown as IBootstrapService);
+    ix.stub(IFlagService, {
+      _serviceBrand: undefined,
+      enabled: (id: string) => flagsEnabled(id),
+    } as unknown as IFlagService);
+    ix.stub(IHostFileSystem, {
+      _serviceBrand: undefined,
+      stat: (path: string) => stat(path),
+    } as unknown as IHostFileSystem);
     ix.stub(IAgentLoopService, {
       _serviceBrand: undefined,
       acquireAdmissionHold: () => {
@@ -177,24 +199,26 @@ describe('AgentShadowModeService', () => {
     const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
     expect(await svc.status()).toBeNull();
     expect(registerInjection).not.toHaveBeenCalled();
-    expect(() => svc.requestEnter()).toThrowError(/main agent/);
+    await expect(svc.requestEnter()).rejects.toThrowError(/main agent/);
     await expect(svc.requestExit()).rejects.toThrowError(/main agent/);
   });
 
-  it('refuses to enter when the host does not support shadow mode', () => {
+  it('refuses to enter when the host does not support shadow mode', async () => {
     const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
     expect(svc.hostSupported()).toBe(false);
-    expect(() => svc.requestEnter()).toThrowError(/not supported/);
+    await expect(svc.requestEnter()).rejects.toThrowError(/not supported/);
   });
 
   it('enters at the turn boundary once armed', async () => {
     ix.stub(IShadowHostSupport, { _serviceBrand: undefined });
     const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
     expect(svc.hostSupported()).toBe(true);
-    svc.requestEnter();
+    await svc.requestEnter();
     expect(coordinator.enterShadow).not.toHaveBeenCalled();
     bus.fireTurnEnded();
-    await vi.waitFor(() => expect(coordinator.enterShadow).toHaveBeenCalledWith('s1'));
+    await vi.waitFor(() =>
+      expect(coordinator.enterShadow).toHaveBeenCalledWith('s1', '/home/user/.kimi-code'),
+    );
   });
 
   it('exits at the turn boundary once armed', async () => {
@@ -206,18 +230,18 @@ describe('AgentShadowModeService', () => {
     await vi.waitFor(() => expect(coordinator.exitShadow).toHaveBeenCalledWith('s1'));
   });
 
-  it('rejects a second pending request', () => {
+  it('rejects a second pending request', async () => {
     ix.stub(IShadowHostSupport, { _serviceBrand: undefined });
     const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
-    svc.requestEnter();
-    expect(() => svc.requestEnter()).toThrowError(/already pending/);
+    await svc.requestEnter();
+    await expect(svc.requestEnter()).rejects.toThrowError(/already pending/);
   });
 
   it('surfaces a switch failure as a one-off reminder notification', async () => {
     ix.stub(IShadowHostSupport, { _serviceBrand: undefined });
     coordinator.enterShadow.mockRejectedValue(new Error('boom'));
     const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
-    svc.requestEnter();
+    await svc.requestEnter();
     bus.fireTurnEnded();
     await vi.waitFor(() =>
       expect(notify).toHaveBeenCalledWith('Shadow mode enter failed: boom', {
@@ -226,10 +250,10 @@ describe('AgentShadowModeService', () => {
     );
   });
 
-  it('arms the transition gate and admission hold synchronously at requestEnter', () => {
+  it('arms the transition gate and admission hold at requestEnter', async () => {
     ix.stub(IShadowHostSupport, { _serviceBrand: undefined });
     const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
-    svc.requestEnter();
+    await svc.requestEnter();
     expect(registry.whenTransitionSettled('s1')).toBeDefined();
     expect(holdCount).toBe(1);
     expect(coordinator.enterShadow).not.toHaveBeenCalled();
@@ -249,7 +273,7 @@ describe('AgentShadowModeService', () => {
     ix.stub(IShadowHostSupport, { _serviceBrand: undefined });
     coordinator.enterShadow.mockRejectedValue(new Error('boom'));
     const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
-    svc.requestEnter();
+    await svc.requestEnter();
     const gate = registry.whenTransitionSettled('s1');
     expect(gate).toBeDefined();
     bus.fireTurnEnded();
@@ -270,10 +294,99 @@ describe('AgentShadowModeService', () => {
     expect(registry.whenTransitionSettled('s0')).toBeUndefined();
     expect(holdCount).toBe(0);
   });
+
+  it('enters with an explicit local path after validating it exists', async () => {
+    ix.stub(IShadowHostSupport, { _serviceBrand: undefined });
+    const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
+    const root = await svc.requestEnter('/data/work');
+    expect(root).toBe('/data/work');
+    expect(stat).toHaveBeenCalledWith('/data/work');
+    bus.fireTurnEnded();
+    await vi.waitFor(() =>
+      expect(coordinator.enterShadow).toHaveBeenCalledWith('s1', '/data/work'),
+    );
+  });
+
+  it('expands ~ in local paths against the os home', async () => {
+    ix.stub(IShadowHostSupport, { _serviceBrand: undefined });
+    const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
+    const root = await svc.requestEnter('~/work');
+    expect(root).toBe('/home/user/work');
+    expect(stat).toHaveBeenCalledWith('/home/user/work');
+  });
+
+  it('rejects a relative path without arming a switch', async () => {
+    ix.stub(IShadowHostSupport, { _serviceBrand: undefined });
+    const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
+    await expect(svc.requestEnter('rel/dir')).rejects.toThrowError(/absolute path/);
+    expect(registry.whenTransitionSettled('s1')).toBeUndefined();
+    expect(holdCount).toBe(0);
+    bus.fireTurnEnded();
+    expect(coordinator.enterShadow).not.toHaveBeenCalled();
+  });
+
+  it('rejects a missing local path without arming a switch', async () => {
+    ix.stub(IShadowHostSupport, { _serviceBrand: undefined });
+    stat.mockRejectedValue(new Error('ENOENT'));
+    const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
+    await expect(svc.requestEnter('/nope')).rejects.toThrowError(/does not exist/);
+    expect(registry.whenTransitionSettled('s1')).toBeUndefined();
+    expect(holdCount).toBe(0);
+  });
+
+  it('rejects a non-directory local path', async () => {
+    ix.stub(IShadowHostSupport, { _serviceBrand: undefined });
+    stat.mockResolvedValue({ isDirectory: false });
+    const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
+    await expect(svc.requestEnter('/data/file')).rejects.toThrowError(/not a directory/);
+    expect(registry.whenTransitionSettled('s1')).toBeUndefined();
+  });
+
+  it('rejects an ssh target while the ssh-workdir flag is off', async () => {
+    ix.stub(IShadowHostSupport, { _serviceBrand: undefined });
+    const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
+    await expect(svc.requestEnter('ssh://host/dir')).rejects.toThrowError(/ssh-workdir/);
+    expect(registry.whenTransitionSettled('s1')).toBeUndefined();
+    expect(holdCount).toBe(0);
+    expect(stat).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed ssh spec even with the flag on', async () => {
+    ix.stub(IShadowHostSupport, { _serviceBrand: undefined });
+    flagsEnabled = (id) => id === SSH_WORKDIR_FLAG_ID;
+    const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
+    await expect(svc.requestEnter('ssh://host')).rejects.toThrowError(/invalid ssh shadow target/);
+    expect(registry.whenTransitionSettled('s1')).toBeUndefined();
+  });
+
+  it('canonicalizes an ssh target with the flag on and skips the local stat', async () => {
+    ix.stub(IShadowHostSupport, { _serviceBrand: undefined });
+    flagsEnabled = (id) => id === SSH_WORKDIR_FLAG_ID;
+    const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
+    const root = await svc.requestEnter('ssh://user@host:22/dir/');
+    expect(root).toBe('ssh://user@host/dir');
+    expect(stat).not.toHaveBeenCalled();
+    bus.fireTurnEnded();
+    await vi.waitFor(() =>
+      expect(coordinator.enterShadow).toHaveBeenCalledWith('s1', 'ssh://user@host/dir'),
+    );
+  });
+
+  it('still allows a valid request after a rejected one', async () => {
+    ix.stub(IShadowHostSupport, { _serviceBrand: undefined });
+    const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
+    await expect(svc.requestEnter('rel/dir')).rejects.toThrowError();
+    await svc.requestEnter('/data/work');
+    bus.fireTurnEnded();
+    await vi.waitFor(() =>
+      expect(coordinator.enterShadow).toHaveBeenCalledWith('s1', '/data/work'),
+    );
+  });
 });
 
 interface FakeSessionHandleOpts {
   readonly sessionId: string;
+  readonly cwd?: string;
   readonly custom?: Record<string, unknown>;
   readonly contextMessages: unknown[];
   readonly enqueue: ReturnType<typeof vi.fn>;
@@ -292,6 +405,7 @@ function fakeSessionHandle(opts: FakeSessionHandleOpts) {
   const dispatched: TurnPrompt[] = [];
   const releaseAdmissionHold = vi.fn();
   const metadataUpdate = vi.fn(async () => {});
+  const flush = vi.fn(async () => {});
   const agentHandle = {
     accessor: {
       get: (token: unknown) => {
@@ -314,6 +428,7 @@ function fakeSessionHandle(opts: FakeSessionHandleOpts) {
             readJournal: async function* () {
               for (const record of opts.wireRecords ?? []) yield record;
             },
+            flush,
           };
         }
         if (token === IEventDispatcher) {
@@ -338,7 +453,7 @@ function fakeSessionHandle(opts: FakeSessionHandleOpts) {
             update: metadataUpdate,
           };
         }
-        if (token === ISessionContext) return { sessionId: opts.sessionId };
+        if (token === ISessionContext) return { sessionId: opts.sessionId, cwd: opts.cwd ?? '/src' };
         if (token === IAgentLifecycleService) {
           return { handleOf: (id: string) => (id === MAIN_AGENT_ID ? agentHandle : undefined) };
         }
@@ -350,6 +465,7 @@ function fakeSessionHandle(opts: FakeSessionHandleOpts) {
     turnState,
     releaseAdmissionHold,
     metadataUpdate,
+    flush,
   };
 }
 
@@ -361,6 +477,7 @@ describe('ShadowSessionCoordinatorService', () => {
   let deleteSession: ReturnType<typeof vi.fn>;
   let catalogDelete: ReturnType<typeof vi.fn>;
   let registry: ShadowRegistryService;
+  let flagsEnabled: (id: string) => boolean;
   const live = new Map<string, ReturnType<typeof fakeSessionHandle>>();
 
   beforeEach(() => {
@@ -371,6 +488,7 @@ describe('ShadowSessionCoordinatorService', () => {
     deleteSession = vi.fn(async () => {});
     catalogDelete = vi.fn(async () => {});
     live.clear();
+    flagsEnabled = () => false;
 
     ix.stub(IWorkspaceInstanceManager, {
       _serviceBrand: undefined,
@@ -398,7 +516,12 @@ describe('ShadowSessionCoordinatorService', () => {
     ix.stub(IBootstrapService, {
       _serviceBrand: undefined,
       homeDir: '/home/user/.kimi-code',
+      osHomeDir: '/home/user',
     } as unknown as IBootstrapService);
+    ix.stub(IFlagService, {
+      _serviceBrand: undefined,
+      enabled: (id: string) => flagsEnabled(id),
+    } as unknown as IFlagService);
     ix.stub(IEventService, {
       _serviceBrand: undefined,
       publish,
@@ -452,6 +575,7 @@ describe('ShadowSessionCoordinatorService', () => {
       [SHADOW_OF_METADATA_KEY]: 's1',
       [SHADOW_FORK_POINT_METADATA_KEY]: 3,
       [SHADOW_ACTIVE_METADATA_KEY]: true,
+      [SHADOW_ROOT_METADATA_KEY]: '/home/user/.kimi-code',
       [SHADOW_CREATED_WORKSPACE_METADATA_KEY]: true,
     });
     expect((opts as { admissionHeldAgentIds: readonly string[] }).admissionHeldAgentIds).toEqual([
@@ -473,6 +597,145 @@ describe('ShadowSessionCoordinatorService', () => {
     expect(event.type).toBe('event.session.shadow_switched');
     expect(event.sessionId).toBe('s1');
     expect(event.toSessionId).toBe('shadow-1');
+  });
+
+  it('enterShadow forks into an explicit local path and records shadow_root', async () => {
+    const enqueue = vi.fn(async () => ({}));
+    live.set(
+      's1',
+      fakeSessionHandle({ sessionId: 's1', contextMessages: [], enqueue, append: vi.fn() }),
+    );
+    forkFrom.mockImplementation((root: string, src: unknown, opts: unknown) => {
+      const target = fakeSessionHandle({
+        sessionId: 'shadow-1',
+        custom: (opts as { metadata?: Record<string, unknown> }).metadata,
+        contextMessages: [],
+        enqueue,
+        append: vi.fn(),
+      });
+      live.set('shadow-1', target);
+      return Promise.resolve(target);
+    });
+
+    const info = await coordinator().enterShadow('s1', '/data/work');
+
+    const [root, , opts] = forkFrom.mock.calls[0]!;
+    expect(root).toBe('/data/work');
+    expect((opts as { metadata: Record<string, unknown> }).metadata).toEqual({
+      [SHADOW_OF_METADATA_KEY]: 's1',
+      [SHADOW_FORK_POINT_METADATA_KEY]: 0,
+      [SHADOW_ACTIVE_METADATA_KEY]: true,
+      [SHADOW_ROOT_METADATA_KEY]: '/data/work',
+      [SHADOW_CREATED_WORKSPACE_METADATA_KEY]: true,
+    });
+    expect(info.workspaceRoot).toBe('/data/work');
+    const [continuation] = enqueue.mock.calls[0] as unknown as [
+      { message: { content: { text: string }[] } },
+    ];
+    expect(continuation.message.content[0]!.text).toContain('/data/work');
+  });
+
+  it('enterShadow canonicalizes an ssh target when the ssh-workdir flag is on', async () => {
+    flagsEnabled = (id) => id === SSH_WORKDIR_FLAG_ID;
+    const enqueue = vi.fn(async () => ({}));
+    live.set(
+      's1',
+      fakeSessionHandle({ sessionId: 's1', contextMessages: [], enqueue, append: vi.fn() }),
+    );
+    forkFrom.mockImplementation((root: string, src: unknown, opts: unknown) => {
+      const target = fakeSessionHandle({
+        sessionId: 'shadow-1',
+        custom: (opts as { metadata?: Record<string, unknown> }).metadata,
+        contextMessages: [],
+        enqueue,
+        append: vi.fn(),
+      });
+      live.set('shadow-1', target);
+      return Promise.resolve(target);
+    });
+
+    const info = await coordinator().enterShadow('s1', 'ssh://user@host:22/dir/');
+
+    const [root, , opts] = forkFrom.mock.calls[0]!;
+    expect(root).toBe('ssh://user@host/dir');
+    expect(
+      (opts as { metadata: Record<string, unknown> }).metadata[SHADOW_ROOT_METADATA_KEY],
+    ).toBe('ssh://user@host/dir');
+    expect(info.workspaceRoot).toBe('ssh://user@host/dir');
+    const [continuation] = enqueue.mock.calls[0] as unknown as [
+      { message: { content: { text: string }[] } },
+    ];
+    expect(continuation.message.content[0]!.text).toContain('remote host ssh://user@host/dir');
+  });
+
+  it('enterShadow rejects an ssh target when the ssh-workdir flag is off', async () => {
+    const enqueue = vi.fn(async () => ({}));
+    live.set(
+      's1',
+      fakeSessionHandle({ sessionId: 's1', contextMessages: [], enqueue, append: vi.fn() }),
+    );
+
+    await expect(coordinator().enterShadow('s1', 'ssh://host/dir')).rejects.toThrowError(
+      /ssh-workdir/,
+    );
+    expect(forkFrom).not.toHaveBeenCalled();
+    expect(registry.isShadowed('s1')).toBe(false);
+  });
+
+  it('enterShadow rejects a relative target path', async () => {
+    const enqueue = vi.fn(async () => ({}));
+    live.set(
+      's1',
+      fakeSessionHandle({ sessionId: 's1', contextMessages: [], enqueue, append: vi.fn() }),
+    );
+
+    await expect(coordinator().enterShadow('s1', 'rel/dir')).rejects.toThrowError(/absolute path/);
+    expect(forkFrom).not.toHaveBeenCalled();
+  });
+
+  it('exitShadow cleans up the recorded shadow_root workspace and reports the source root', async () => {
+    ix.stub(IWorkspaceService, {
+      _serviceBrand: undefined,
+      list: async () => [
+        { id: 'wd_data', root: '/data/work', name: 'work', createdAt: 0, lastOpenedAt: 0 },
+      ],
+      delete: catalogDelete,
+    } as unknown as IWorkspaceService);
+    const enqueue = vi.fn(async () => ({}));
+    live.set(
+      's1',
+      fakeSessionHandle({
+        sessionId: 's1',
+        cwd: '/src',
+        contextMessages: [{}, {}, {}],
+        enqueue,
+        append: vi.fn(),
+      }),
+    );
+    live.set(
+      'shadow-1',
+      fakeSessionHandle({
+        sessionId: 'shadow-1',
+        cwd: '/data/work',
+        custom: {
+          [SHADOW_OF_METADATA_KEY]: 's1',
+          [SHADOW_FORK_POINT_METADATA_KEY]: 3,
+          [SHADOW_ROOT_METADATA_KEY]: '/data/work',
+          [SHADOW_CREATED_WORKSPACE_METADATA_KEY]: true,
+        },
+        contextMessages: [{}, {}, {}, { text: 'a' }],
+        enqueue,
+        append: vi.fn(),
+      }),
+    );
+
+    const info = await coordinator().exitShadow('shadow-1');
+
+    expect(info.workspaceRoot).toBe('/src');
+    expect(catalogDelete).toHaveBeenCalledWith('wd_data');
+    const event = publish.mock.calls[0]![0] as SessionShadowSwitched;
+    expect(event.direction).toBe('exit');
+    expect(event.workspaceRoot).toBe('/src');
   });
 
   it('exitShadow pads post-fork rows back, publishes, then deletes the shadow session', async () => {
@@ -512,6 +775,14 @@ describe('ShadowSessionCoordinatorService', () => {
     const info = await coordinator().exitShadow('shadow-1');
 
     expect(sourceAppend).toHaveBeenCalledWith({ text: 'a' }, { text: 'b' });
+    const sourceFlush = live.get('s1')!.flush;
+    expect(sourceFlush).toHaveBeenCalledOnce();
+    expect(sourceFlush.mock.invocationCallOrder[0]!).toBeGreaterThan(
+      sourceAppend.mock.invocationCallOrder[0]!,
+    );
+    expect(sourceFlush.mock.invocationCallOrder[0]!).toBeLessThan(
+      publish.mock.invocationCallOrder[0]!,
+    );
     expect(info.direction).toBe('exit');
     expect(info.toSessionId).toBe('s1');
     expect(deleteSession).toHaveBeenCalledWith('shadow-1');
@@ -875,5 +1146,17 @@ describe('ShadowRegistryService', () => {
     expect(registry.isShadowId('shadow-1')).toBe(false);
     closeHandler?.({ sessionId: 'unrelated' });
     expect(registry.effectiveId('s1')).toBe('s1');
+  });
+});
+
+describe('EnterShadowModeInputSchema', () => {
+  it('accepts an omitted or trimmed path and rejects unknown keys and empty paths', () => {
+    expect(EnterShadowModeInputSchema.parse({})).toEqual({});
+    expect(EnterShadowModeInputSchema.parse({ path: ' /data/work ' })).toEqual({
+      path: '/data/work',
+    });
+    expect(() => EnterShadowModeInputSchema.parse({ bogus: 1 })).toThrow();
+    expect(() => EnterShadowModeInputSchema.parse({ path: '' })).toThrow();
+    expect(() => EnterShadowModeInputSchema.parse({ path: '   ' })).toThrow();
   });
 });

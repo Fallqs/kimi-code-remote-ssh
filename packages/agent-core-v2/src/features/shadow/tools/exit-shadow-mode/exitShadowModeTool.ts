@@ -48,8 +48,8 @@ export class ExitShadowModeTool implements IExitShadowModeTool {
       output: [
         'Shadow mode exit requested. This turn ends now.',
         '',
-        `At the turn boundary this shadow session's conversation rows since the fork are merged back into the original session (${status.sourceSessionId}), this shadow session is discarded — its local shell state and background tasks are destroyed — and the host switches back to the original session, restoring the checkpointed environment.`,
-        'Files written under the shadow workdir persist on the local machine. Do not call further tools in this turn.',
+        `At the turn boundary this shadow session's conversation rows since the fork are merged back into the original session (${status.sourceSessionId}), this shadow session is discarded — its shell state and background tasks are destroyed — and the host switches back to the original session, restoring the checkpointed environment.`,
+        'Files written under the shadow workdir persist in the shadow environment. Do not call further tools in this turn.',
       ].join('\n'),
       stopTurn: true,
     };

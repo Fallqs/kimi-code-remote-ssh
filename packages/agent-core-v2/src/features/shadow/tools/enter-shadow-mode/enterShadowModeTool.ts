@@ -19,7 +19,7 @@ export class EnterShadowModeTool implements IEnterShadowModeTool {
 
   constructor(@IAgentShadowModeService private readonly shadow: IAgentShadowModeService) {}
 
-  resolveExecution(_args: EnterShadowModeInput): ToolExecution {
+  resolveExecution(args: EnterShadowModeInput): ToolExecution {
     return {
       description: 'Entering shadow mode',
       approvalRule: this.name,
@@ -34,12 +34,13 @@ export class EnterShadowModeTool implements IEnterShadowModeTool {
         if (status !== null) {
           return {
             isError: true,
-            output: `Shadow mode is already active (workdir: ${status.workDir}). Use ExitShadowMode when the local work is done.`,
+            output: `Shadow mode is already active (workdir: ${status.workDir}). Use ExitShadowMode when the shadow work is done.`,
           };
         }
 
+        let root: string;
         try {
-          this.shadow.requestEnter();
+          root = await this.shadow.requestEnter(args.path);
         } catch (error) {
           const message = error instanceof Error ? error.message : 'Failed to enter shadow mode.';
           return { isError: true, output: `Failed to enter shadow mode: ${message}` };
@@ -49,7 +50,7 @@ export class EnterShadowModeTool implements IEnterShadowModeTool {
           output: [
             'Shadow mode requested. This turn ends now.',
             '',
-            'At the turn boundary the session is forked into a LOCAL session rooted at the local kimi home (~/.kimi-code) with the full conversation intact, and the host switches to it.',
+            `At the turn boundary the session is forked into a session rooted at ${root} with the full conversation intact, and the host switches to it.`,
             'The current session is preserved untouched as the checkpoint. Do not call further tools in this turn.',
           ].join('\n'),
           stopTurn: true,

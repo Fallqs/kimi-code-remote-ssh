@@ -10,6 +10,8 @@ export const SHADOW_CREATED_WORKSPACE_METADATA_KEY = 'shadow_created_workspace';
 
 export const SHADOW_ACTIVE_METADATA_KEY = 'shadow_active';
 
+export const SHADOW_ROOT_METADATA_KEY = 'shadow_root';
+
 export type ShadowSwitchDirection = 'enter' | 'exit';
 
 export interface ShadowSwitchInfo {
@@ -42,7 +44,7 @@ export interface SessionShadowSwitched {
 export interface IShadowSessionCoordinator {
   readonly _serviceBrand: undefined;
 
-  enterShadow(sourceSessionId: string): Promise<ShadowSwitchInfo>;
+  enterShadow(sourceSessionId: string, targetRoot?: string): Promise<ShadowSwitchInfo>;
 
   exitShadow(shadowSessionId: string): Promise<ShadowSwitchInfo>;
 }

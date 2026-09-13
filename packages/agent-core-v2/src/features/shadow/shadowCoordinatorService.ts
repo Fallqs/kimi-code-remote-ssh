@@ -8,6 +8,7 @@ import { IAgentStateService } from '#/agent/state/agentState';
 import { turnKey, TurnPrompt } from '#/agent/loop/turnOps';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IEventService } from '#/app/event/event';
+import { IFlagService } from '#/app/flag/flag';
 import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IWorkspaceService } from '#/app/workspace/workspace';
@@ -21,6 +22,7 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IWireService } from '#/wire/wire';
 import type { WireRecord } from '#/wire/record';
 import type { ExternalSessionSource } from '#/workspace/sessionLifecycle/sessionLifecycle';
+import { SSH_WORKDIR_FLAG_ID } from '#/workspace/workspaceSsh/flag';
 
 import {
   IShadowSessionCoordinator,
@@ -29,14 +31,20 @@ import {
   SHADOW_CREATED_WORKSPACE_METADATA_KEY,
   SHADOW_FORK_POINT_METADATA_KEY,
   SHADOW_OF_METADATA_KEY,
+  SHADOW_ROOT_METADATA_KEY,
   type SessionShadowSwitchedEvent,
   type ShadowSwitchInfo,
 } from './shadowCoordinator';
 import { IAgentShadowModeService } from './shadow';
 import { IShadowRegistry } from './shadowRegistry';
+import { isShadowTargetRemote, resolveShadowTargetRoot } from './shadowTarget';
 
-const SHADOW_ENTER_CONTINUATION =
-  '[shadow mode] You are now in the shadow session: your execution environment is the LOCAL machine, rooted at the shadow workdir. The original session is preserved untouched as the checkpoint. Continue your task; call ExitShadowMode when the local work is done.';
+function shadowEnterContinuation(root: string): string {
+  if (isShadowTargetRemote(root)) {
+    return `[shadow mode] You are now in the shadow session: your execution environment is the remote host ${root} (over SSH). The original session is preserved untouched as the checkpoint. Continue your task; call ExitShadowMode when the remote work is done.`;
+  }
+  return `[shadow mode] You are now in the shadow session: your execution environment is the local machine, rooted at ${root}. The original session is preserved untouched as the checkpoint. Continue your task; call ExitShadowMode when the local work is done.`;
+}
 
 const SHADOW_EXIT_CONTINUATION =
   '[shadow mode] Exited shadow mode: the shadow session’s rows were merged back above and the shadow session was discarded. Your execution environment is restored to the original workspace. Continue your task.';
@@ -52,6 +60,7 @@ export class ShadowSessionCoordinatorService extends Service implements IShadowS
     @IEventService private readonly events: IEventService,
     @IWorkspaceService private readonly catalog: IWorkspaceService,
     @IShadowRegistry private readonly registry: IShadowRegistry,
+    @IFlagService private readonly flags: IFlagService,
   ) {
     super();
   }
@@ -70,7 +79,7 @@ export class ShadowSessionCoordinatorService extends Service implements IShadowS
     };
   }
 
-  async enterShadow(sourceSessionId: string): Promise<ShadowSwitchInfo> {
+  async enterShadow(sourceSessionId: string, targetRoot?: string): Promise<ShadowSwitchInfo> {
     try {
       const source = await this.sourceFor(sourceSessionId);
       if (source === undefined) {
@@ -85,14 +94,19 @@ export class ShadowSessionCoordinatorService extends Service implements IShadowS
       const sourceMain = sourceHandle?.accessor.get(IAgentLifecycleService).handleOf(MAIN_AGENT_ID);
       const forkPoint = sourceMain?.accessor.get(IAgentContextMemoryService).get().length ?? 0;
 
-      const workspaceRoot = this.bootstrap.homeDir;
-      const homeCataloged = await this.isCataloged(workspaceRoot);
+      const workspaceRoot = resolveShadowTargetRoot(targetRoot, {
+        homeDir: this.bootstrap.homeDir,
+        osHomeDir: this.bootstrap.osHomeDir,
+        sshEnabled: this.flags.enabled(SSH_WORKDIR_FLAG_ID),
+      });
+      const targetCataloged = await this.isCataloged(workspaceRoot);
       const metadata: Record<string, unknown> = {
         [SHADOW_OF_METADATA_KEY]: sourceSessionId,
         [SHADOW_FORK_POINT_METADATA_KEY]: forkPoint,
         [SHADOW_ACTIVE_METADATA_KEY]: true,
+        [SHADOW_ROOT_METADATA_KEY]: workspaceRoot,
       };
-      if (!homeCataloged) metadata[SHADOW_CREATED_WORKSPACE_METADATA_KEY] = true;
+      if (!targetCataloged) metadata[SHADOW_CREATED_WORKSPACE_METADATA_KEY] = true;
       const target = await this.sessions.forkFrom(workspaceRoot, source, {
         title: `Shadow: ${sourceMeta?.title ?? sourceSessionId}`,
         metadata,
@@ -101,7 +115,7 @@ export class ShadowSessionCoordinatorService extends Service implements IShadowS
       const targetSessionId = target.accessor.get(ISessionContext).sessionId;
       this.registry.noteEnter(sourceSessionId, targetSessionId);
 
-      this.enqueueContinuation(target, MAIN_AGENT_ID, SHADOW_ENTER_CONTINUATION);
+      this.enqueueContinuation(target, MAIN_AGENT_ID, shadowEnterContinuation(workspaceRoot));
       this.registry.settleTransition(sourceSessionId);
       const info: ShadowSwitchInfo = {
         fromSessionId: sourceSessionId,
@@ -135,6 +149,8 @@ export class ShadowSessionCoordinatorService extends Service implements IShadowS
       }
       const forkPoint = meta.custom?.[SHADOW_FORK_POINT_METADATA_KEY];
       const boundary = typeof forkPoint === 'number' && forkPoint >= 0 ? forkPoint : 0;
+      const recordedRoot = meta.custom?.[SHADOW_ROOT_METADATA_KEY];
+      const shadowRoot = typeof recordedRoot === 'string' ? recordedRoot : this.bootstrap.homeDir;
 
       const clearedCustom = { ...meta.custom };
       delete clearedCustom[SHADOW_ACTIVE_METADATA_KEY];
@@ -161,10 +177,11 @@ export class ShadowSessionCoordinatorService extends Service implements IShadowS
         if (rows.length > 0) {
           sourceMain.accessor.get(IAgentContextMemoryService).append(...rows);
         }
+        await sourceMain.accessor.get(IWireService).flush();
       }
 
       this.enqueueContinuation(sourceHandle, MAIN_AGENT_ID, SHADOW_EXIT_CONTINUATION);
-      const workspaceRoot = this.bootstrap.homeDir;
+      const workspaceRoot = sourceHandle.accessor.get(ISessionContext).cwd;
       const info: ShadowSwitchInfo = {
         fromSessionId: shadowSessionId,
         toSessionId: sourceSessionId,
@@ -175,7 +192,7 @@ export class ShadowSessionCoordinatorService extends Service implements IShadowS
       this.registry.settleTransition(sourceSessionId);
       this.publishSwitch(info, sourceSessionId);
       await this.sessions.delete(shadowSessionId);
-      await this.removeShadowWorkspaceRow(meta.custom, workspaceRoot);
+      await this.removeShadowWorkspaceRow(meta.custom, shadowRoot);
       sourceMain?.accessor.get(IAgentShadowModeService).releaseAdmissionHold();
       return info;
     } catch (error) {

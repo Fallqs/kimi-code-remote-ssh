@@ -5,7 +5,9 @@ import { z } from 'zod';
 import { createDecorator } from '#/_base/di/instantiation';
 import type { AgentTool } from '#/tool/toolContract';
 
-export const EnterShadowModeInputSchema = z.object({}).strict();
+export const EnterShadowModeInputSchema = z
+  .object({ path: z.string().trim().min(1).optional() })
+  .strict();
 export type EnterShadowModeInput = z.infer<typeof EnterShadowModeInputSchema>;
 
 export interface IEnterShadowModeTool extends AgentTool<EnterShadowModeInput> {

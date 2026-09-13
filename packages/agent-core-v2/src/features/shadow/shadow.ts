@@ -16,7 +16,7 @@ export interface IAgentShadowModeService {
 
   hostSupported(): boolean;
 
-  requestEnter(): void;
+  requestEnter(path?: string): Promise<string>;
 
   requestExit(): Promise<void>;
 
