@@ -48,7 +48,7 @@ export interface SessionSummaryFacts {
 }
 
 /**
- * Shadow-mode transparency: the engine records the shadow fork's bookkeeping
+ * GOTO transparency: the engine records the shadow fork's bookkeeping
  * in the session's `custom` map, which the client-visible shapes mirror
  * verbatim — strip those keys so a shadow presented as its source is
  * indistinguishable from the source itself.

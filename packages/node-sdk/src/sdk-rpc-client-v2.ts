@@ -502,8 +502,8 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
         }
         const translated = translateGlobalEvent(event);
         if (translated === undefined) return;
-        // Shadow-mode transparency: the emitting session may be a shadow fork
-        // (e.g. a title/lastPrompt update during shadow mode) — restamp the
+        // Shadow-session transparency: the emitting session may be a shadow fork
+        // (e.g. a title/lastPrompt update while in GOTO) — restamp the
         // client-visible id before forwarding.
         const sessionId = (translated as { readonly sessionId?: unknown }).sessionId;
         const presented =
@@ -522,7 +522,7 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
       // future — through the App-scope registry.
       followSessionLifecycles(this.app.accessor, (service) =>
         service.onDidCloseSession((closed) => {
-          // A shadow fork closed without ExitShadowMode: hand the source's
+          // A shadow fork closed without GOBACK: hand the source's
           // stream back before dropping the shadow's wiring.
           const wiring = this.sessionWirings.get(closed.sessionId);
           if (wiring !== undefined && wiring.presentedId !== closed.sessionId) {

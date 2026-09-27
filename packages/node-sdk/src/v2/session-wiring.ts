@@ -111,7 +111,7 @@ export class SessionEventWiring {
   /** The id stamped onto translated events and interaction payloads — the shadow source's id while this session is a shadow fork. */
   private readonly presentedSessionId: string;
   /**
-   * Shadow-mode transparency: while this session is the preserved source of a
+   * GOTO transparency: while this session is the preserved source of a
    * shadow fork, its domain events are dropped (the client keeps seeing the
    * shadow's stream stamped with this session's id). Interactions stay
    * bridged — the source is admission-held, so none can appear anyway.

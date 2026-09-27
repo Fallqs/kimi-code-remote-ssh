@@ -9,7 +9,7 @@ export interface ShadowStatus {
   readonly sourceSessionId: string;
 }
 
-export interface IAgentShadowModeService {
+export interface IAgentGotoModeService {
   readonly _serviceBrand: undefined;
 
   status(): Promise<ShadowStatus | null>;
@@ -23,5 +23,4 @@ export interface IAgentShadowModeService {
   releaseAdmissionHold(): void;
 }
 
-export const IAgentShadowModeService =
-  createDecorator<IAgentShadowModeService>('agentShadowModeService');
+export const IAgentGotoModeService = createDecorator<IAgentGotoModeService>('gotoModeService');

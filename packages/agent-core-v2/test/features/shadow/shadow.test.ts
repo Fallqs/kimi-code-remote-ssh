@@ -4,6 +4,7 @@ import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { TestInstantiationService } from '#/_base/di/test';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
@@ -16,7 +17,10 @@ import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IWorkspaceService } from '#/app/workspace/workspace';
 import { IAgentReminderService } from '#/features/reminder/reminderService';
-import { IAgentShadowModeService } from '#/features/shadow/shadow';
+import type { ContextInjectionProvider } from '#/features/reminder/types';
+import { GotoModeService } from '#/features/shadow/gotoModeService';
+import { GotoModeInjection } from '#/features/shadow/injection/gotoModeInjection';
+import { IAgentGotoModeService } from '#/features/shadow/shadow';
 import {
   IShadowHostSupport,
   IShadowSessionCoordinator,
@@ -29,8 +33,7 @@ import {
 } from '#/features/shadow/shadowCoordinator';
 import { ShadowSessionCoordinatorService } from '#/features/shadow/shadowCoordinatorService';
 import { IShadowRegistry, ShadowRegistryService } from '#/features/shadow/shadowRegistry';
-import { AgentShadowModeService } from '#/features/shadow/shadowService';
-import { EnterShadowModeInputSchema } from '#/features/shadow/tools/enter-shadow-mode/enter-shadow-mode';
+import { GotoInputSchema } from '#/features/shadow/tools/goto/goto';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -94,7 +97,7 @@ function turnEndedBus(): TurnEndedBus {
   };
 }
 
-describe('AgentShadowModeService', () => {
+describe('GotoModeService', () => {
   let disposables: DisposableStore;
   let ix: TestInstantiationService;
   let bus: TurnEndedBus;
@@ -176,16 +179,16 @@ describe('AgentShadowModeService', () => {
       get: () => false,
       set: () => {},
     } as unknown as IAgentStateService);
-    ix.set(IAgentShadowModeService, new SyncDescriptor(AgentShadowModeService));
+    ix.set(IAgentGotoModeService, new SyncDescriptor(GotoModeService));
   });
   afterEach(() => disposables.dispose());
 
   it('reports null status outside a shadow session and the shadow workdir inside one', async () => {
-    const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
+    const svc = ix.createInstance(new SyncDescriptor(GotoModeService)) as GotoModeService;
     expect(await svc.status()).toBeNull();
 
     ix.stub(ISessionMetadata, sessionMetadataStub({ [SHADOW_OF_METADATA_KEY]: 's0' }));
-    const shadowed = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
+    const shadowed = ix.createInstance(new SyncDescriptor(GotoModeService)) as GotoModeService;
     expect(await shadowed.status()).toEqual({
       workDir: '/home/user/.kimi-code',
       sourceSessionId: 's0',
@@ -195,22 +198,22 @@ describe('AgentShadowModeService', () => {
   it('is inert for subagents: no status, requests rejected, no injection', async () => {
     ix.stub(IAgentScopeContext, agentScopeContextStub('sub-1'));
     ix.stub(ISessionMetadata, sessionMetadataStub({ [SHADOW_OF_METADATA_KEY]: 's0' }));
-    const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
+    const svc = ix.createInstance(new SyncDescriptor(GotoModeService)) as GotoModeService;
     expect(await svc.status()).toBeNull();
     expect(registerInjection).not.toHaveBeenCalled();
     await expect(svc.requestEnter()).rejects.toThrowError(/main agent/);
     await expect(svc.requestExit()).rejects.toThrowError(/main agent/);
   });
 
-  it('refuses to enter when the host does not support shadow mode', async () => {
-    const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
+  it('refuses to enter when the host does not support GOTO', async () => {
+    const svc = ix.createInstance(new SyncDescriptor(GotoModeService)) as GotoModeService;
     expect(svc.hostSupported()).toBe(false);
     await expect(svc.requestEnter()).rejects.toThrowError(/not supported/);
   });
 
   it('enters at the turn boundary once armed', async () => {
     ix.stub(IShadowHostSupport, { _serviceBrand: undefined });
-    const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
+    const svc = ix.createInstance(new SyncDescriptor(GotoModeService)) as GotoModeService;
     expect(svc.hostSupported()).toBe(true);
     await svc.requestEnter();
     expect(coordinator.enterShadow).not.toHaveBeenCalled();
@@ -223,7 +226,7 @@ describe('AgentShadowModeService', () => {
   it('exits at the turn boundary once armed', async () => {
     ix.stub(IShadowHostSupport, { _serviceBrand: undefined });
     ix.stub(ISessionMetadata, sessionMetadataStub({ [SHADOW_OF_METADATA_KEY]: 's0' }));
-    const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
+    const svc = ix.createInstance(new SyncDescriptor(GotoModeService)) as GotoModeService;
     await svc.requestExit();
     bus.fireTurnEnded();
     await vi.waitFor(() => expect(coordinator.exitShadow).toHaveBeenCalledWith('s1'));
@@ -231,7 +234,7 @@ describe('AgentShadowModeService', () => {
 
   it('rejects a second pending request', async () => {
     ix.stub(IShadowHostSupport, { _serviceBrand: undefined });
-    const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
+    const svc = ix.createInstance(new SyncDescriptor(GotoModeService)) as GotoModeService;
     await svc.requestEnter();
     await expect(svc.requestEnter()).rejects.toThrowError(/already pending/);
   });
@@ -239,11 +242,11 @@ describe('AgentShadowModeService', () => {
   it('surfaces a switch failure as a one-off reminder notification', async () => {
     ix.stub(IShadowHostSupport, { _serviceBrand: undefined });
     coordinator.enterShadow.mockRejectedValue(new Error('boom'));
-    const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
+    const svc = ix.createInstance(new SyncDescriptor(GotoModeService)) as GotoModeService;
     await svc.requestEnter();
     bus.fireTurnEnded();
     await vi.waitFor(() =>
-      expect(notify).toHaveBeenCalledWith('Shadow mode enter failed: boom', {
+      expect(notify).toHaveBeenCalledWith('GOTO enter failed: boom', {
         variant: 'shadow_mode',
       }),
     );
@@ -251,7 +254,7 @@ describe('AgentShadowModeService', () => {
 
   it('arms the transition gate and admission hold at requestEnter', async () => {
     ix.stub(IShadowHostSupport, { _serviceBrand: undefined });
-    const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
+    const svc = ix.createInstance(new SyncDescriptor(GotoModeService)) as GotoModeService;
     await svc.requestEnter();
     expect(registry.whenTransitionSettled('s1')).toBeDefined();
     expect(holdCount).toBe(1);
@@ -261,7 +264,7 @@ describe('AgentShadowModeService', () => {
   it('arms the exit gate against the source session id at requestExit', async () => {
     ix.stub(IShadowHostSupport, { _serviceBrand: undefined });
     ix.stub(ISessionMetadata, sessionMetadataStub({ [SHADOW_OF_METADATA_KEY]: 's0' }));
-    const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
+    const svc = ix.createInstance(new SyncDescriptor(GotoModeService)) as GotoModeService;
     await svc.requestExit();
     expect(registry.whenTransitionSettled('s0')).toBeDefined();
     expect(registry.whenTransitionSettled('s1')).toBeUndefined();
@@ -271,7 +274,7 @@ describe('AgentShadowModeService', () => {
   it('releases the gate and hold when the enter switch fails', async () => {
     ix.stub(IShadowHostSupport, { _serviceBrand: undefined });
     coordinator.enterShadow.mockRejectedValue(new Error('boom'));
-    const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
+    const svc = ix.createInstance(new SyncDescriptor(GotoModeService)) as GotoModeService;
     await svc.requestEnter();
     const gate = registry.whenTransitionSettled('s1');
     expect(gate).toBeDefined();
@@ -286,7 +289,7 @@ describe('AgentShadowModeService', () => {
     ix.stub(IShadowHostSupport, { _serviceBrand: undefined });
     ix.stub(ISessionMetadata, sessionMetadataStub({ [SHADOW_OF_METADATA_KEY]: 's0' }));
     coordinator.exitShadow.mockRejectedValue(new Error('boom'));
-    const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
+    const svc = ix.createInstance(new SyncDescriptor(GotoModeService)) as GotoModeService;
     await svc.requestExit();
     bus.fireTurnEnded();
     await vi.waitFor(() => expect(notify).toHaveBeenCalled());
@@ -296,7 +299,7 @@ describe('AgentShadowModeService', () => {
 
   it('enters with an explicit local path after validating it exists', async () => {
     ix.stub(IShadowHostSupport, { _serviceBrand: undefined });
-    const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
+    const svc = ix.createInstance(new SyncDescriptor(GotoModeService)) as GotoModeService;
     const root = await svc.requestEnter('/data/work');
     expect(root).toBe('/data/work');
     expect(stat).toHaveBeenCalledWith('/data/work');
@@ -308,7 +311,7 @@ describe('AgentShadowModeService', () => {
 
   it('expands ~ in local paths against the os home', async () => {
     ix.stub(IShadowHostSupport, { _serviceBrand: undefined });
-    const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
+    const svc = ix.createInstance(new SyncDescriptor(GotoModeService)) as GotoModeService;
     const root = await svc.requestEnter('~/work');
     expect(root).toBe('/home/user/work');
     expect(stat).toHaveBeenCalledWith('/home/user/work');
@@ -316,7 +319,7 @@ describe('AgentShadowModeService', () => {
 
   it('rejects a relative path without arming a switch', async () => {
     ix.stub(IShadowHostSupport, { _serviceBrand: undefined });
-    const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
+    const svc = ix.createInstance(new SyncDescriptor(GotoModeService)) as GotoModeService;
     await expect(svc.requestEnter('rel/dir')).rejects.toThrowError(/absolute path/);
     expect(registry.whenTransitionSettled('s1')).toBeUndefined();
     expect(holdCount).toBe(0);
@@ -327,7 +330,7 @@ describe('AgentShadowModeService', () => {
   it('rejects a missing local path without arming a switch', async () => {
     ix.stub(IShadowHostSupport, { _serviceBrand: undefined });
     stat.mockRejectedValue(new Error('ENOENT'));
-    const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
+    const svc = ix.createInstance(new SyncDescriptor(GotoModeService)) as GotoModeService;
     await expect(svc.requestEnter('/nope')).rejects.toThrowError(/does not exist/);
     expect(registry.whenTransitionSettled('s1')).toBeUndefined();
     expect(holdCount).toBe(0);
@@ -336,14 +339,14 @@ describe('AgentShadowModeService', () => {
   it('rejects a non-directory local path', async () => {
     ix.stub(IShadowHostSupport, { _serviceBrand: undefined });
     stat.mockResolvedValue({ isDirectory: false });
-    const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
+    const svc = ix.createInstance(new SyncDescriptor(GotoModeService)) as GotoModeService;
     await expect(svc.requestEnter('/data/file')).rejects.toThrowError(/not a directory/);
     expect(registry.whenTransitionSettled('s1')).toBeUndefined();
   });
 
   it('rejects an ssh target while the ssh-workdir flag is off', async () => {
     ix.stub(IShadowHostSupport, { _serviceBrand: undefined });
-    const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
+    const svc = ix.createInstance(new SyncDescriptor(GotoModeService)) as GotoModeService;
     await expect(svc.requestEnter('ssh://host/dir')).rejects.toThrowError(/ssh-workdir/);
     expect(registry.whenTransitionSettled('s1')).toBeUndefined();
     expect(holdCount).toBe(0);
@@ -353,7 +356,7 @@ describe('AgentShadowModeService', () => {
   it('rejects a malformed ssh spec even with the flag on', async () => {
     ix.stub(IShadowHostSupport, { _serviceBrand: undefined });
     flagsEnabled = (id) => id === SSH_WORKDIR_FLAG_ID;
-    const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
+    const svc = ix.createInstance(new SyncDescriptor(GotoModeService)) as GotoModeService;
     await expect(svc.requestEnter('ssh://host')).rejects.toThrowError(/invalid ssh shadow target/);
     expect(registry.whenTransitionSettled('s1')).toBeUndefined();
   });
@@ -361,7 +364,7 @@ describe('AgentShadowModeService', () => {
   it('canonicalizes an ssh target with the flag on and skips the local stat', async () => {
     ix.stub(IShadowHostSupport, { _serviceBrand: undefined });
     flagsEnabled = (id) => id === SSH_WORKDIR_FLAG_ID;
-    const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
+    const svc = ix.createInstance(new SyncDescriptor(GotoModeService)) as GotoModeService;
     const root = await svc.requestEnter('ssh://user@host:22/dir/');
     expect(root).toBe('ssh://user@host/dir');
     expect(stat).not.toHaveBeenCalled();
@@ -373,7 +376,7 @@ describe('AgentShadowModeService', () => {
 
   it('still allows a valid request after a rejected one', async () => {
     ix.stub(IShadowHostSupport, { _serviceBrand: undefined });
-    const svc = ix.createInstance(new SyncDescriptor(AgentShadowModeService)) as AgentShadowModeService;
+    const svc = ix.createInstance(new SyncDescriptor(GotoModeService)) as GotoModeService;
     await expect(svc.requestEnter('rel/dir')).rejects.toThrowError();
     await svc.requestEnter('/data/work');
     bus.fireTurnEnded();
@@ -412,7 +415,7 @@ function fakeSessionHandle(opts: FakeSessionHandleOpts) {
           return { get: () => opts.contextMessages, append: opts.append };
         }
         if (token === IAgentLoopService) return { submit: opts.enqueue };
-        if (token === IAgentShadowModeService) return { releaseAdmissionHold };
+        if (token === IAgentGotoModeService) return { releaseAdmissionHold };
         if (token === IAgentStateService) {
           return {
             has: (key: unknown) => key === turnKey,
@@ -664,7 +667,9 @@ describe('ShadowSessionCoordinatorService', () => {
     const [continuation] = enqueue.mock.calls[0] as unknown as [
       { message: { content: { text: string }[] } },
     ];
-    expect(continuation.message.content[0]!.text).toContain('remote host ssh://user@host/dir');
+    expect(continuation.message.content[0]!.text).toContain(
+      'You are now in ssh://user@host/dir (over SSH)',
+    );
   });
 
   it('enterShadow rejects an ssh target when the ssh-workdir flag is off', async () => {
@@ -1148,14 +1153,70 @@ describe('ShadowRegistryService', () => {
   });
 });
 
-describe('EnterShadowModeInputSchema', () => {
+describe('GotoInputSchema', () => {
   it('accepts an omitted or trimmed path and rejects unknown keys and empty paths', () => {
-    expect(EnterShadowModeInputSchema.parse({})).toEqual({});
-    expect(EnterShadowModeInputSchema.parse({ path: ' /data/work ' })).toEqual({
+    expect(GotoInputSchema.parse({})).toEqual({});
+    expect(GotoInputSchema.parse({ path: ' /data/work ' })).toEqual({
       path: '/data/work',
     });
-    expect(() => EnterShadowModeInputSchema.parse({ bogus: 1 })).toThrow();
-    expect(() => EnterShadowModeInputSchema.parse({ path: '' })).toThrow();
-    expect(() => EnterShadowModeInputSchema.parse({ path: '   ' })).toThrow();
+    expect(() => GotoInputSchema.parse({ bogus: 1 })).toThrow();
+    expect(() => GotoInputSchema.parse({ path: '' })).toThrow();
+    expect(() => GotoInputSchema.parse({ path: '   ' })).toThrow();
+  });
+});
+
+describe('GotoModeInjection', () => {
+  function gotoInjection(workDir: string) {
+    let provider: ContextInjectionProvider | undefined;
+    const registration = {
+      register: (variant: string, entry: ContextInjectionProvider) => {
+        if (variant === 'shadow_mode') provider = entry;
+        return { dispose: () => {} };
+      },
+    } as unknown as IAgentReminderService;
+    const state = new Map<string, unknown>();
+    const store = new DisposableStore();
+    let history: ContextMessage[] = [];
+    store.add(
+      new GotoModeInjection(
+        registration,
+        { status: async () => ({ workDir, sourceSessionId: 's0' }) },
+        { get: () => history } as unknown as IAgentContextMemoryService,
+        {
+          contributeState: () => {},
+          get: (key: unknown) => state.get(String(key)) ?? false,
+          set: (key: unknown, value: unknown) => {
+            state.set(String(key), value);
+          },
+        } as unknown as IAgentStateService,
+      ),
+    );
+    return async (injectedAt: number | null, messages: ContextMessage[] = []) => {
+      history = messages;
+      return provider!({
+        injectedPositions: [],
+        lastInjectedAt: injectedAt,
+        isNewTurn: true,
+      });
+    };
+  }
+
+  it('substitutes the workdir into the reminder and leaves no placeholder behind', async () => {
+    const render = gotoInjection('/data/work');
+    const full = await render(null);
+    expect(full).toContain('You are in /data/work.');
+    expect(full).not.toContain('$GOTO_WORKDIR');
+  });
+
+  it('substitutes the workdir into the sparse reminder of a running GOTO', async () => {
+    const render = gotoInjection('/data/work');
+    await render(null);
+    const sparse = await render(0, [
+      { role: 'assistant', content: [], toolCalls: [] },
+      { role: 'assistant', content: [], toolCalls: [] },
+      { role: 'assistant', content: [], toolCalls: [] },
+    ]);
+    expect(sparse).toContain('You are still in /data/work.');
+    expect(sparse).not.toContain('$GOTO_WORKDIR');
   });
 });

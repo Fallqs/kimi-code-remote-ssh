@@ -16,8 +16,8 @@ import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { SSH_WORKDIR_FLAG_ID } from '#/workspace/workspaceSsh/flag';
 
-import { ShadowModeInjection } from './injection/shadowModeInjection';
-import { IAgentShadowModeService, type ShadowStatus } from './shadow';
+import { GotoModeInjection } from './injection/gotoModeInjection';
+import { IAgentGotoModeService, type ShadowStatus } from './shadow';
 import {
   IShadowHostSupport,
   IShadowSessionCoordinator,
@@ -26,17 +26,17 @@ import {
 import { IShadowRegistry, type ShadowTransitionDirection } from './shadowRegistry';
 import { isShadowTargetRemote, resolveShadowTargetRoot } from './shadowTarget';
 
-const SHADOW_MODE_FAILURE_REMINDER_VARIANT = 'shadow_mode';
+const GOTO_MODE_FAILURE_REMINDER_VARIANT = 'shadow_mode';
 
-interface PendingShadowAction {
+interface PendingGotoAction {
   readonly action: 'enter' | 'exit';
   readonly root?: string;
 }
 
-export class AgentShadowModeService extends Service implements IAgentShadowModeService {
+export class GotoModeService extends Service implements IAgentGotoModeService {
   declare readonly _serviceBrand: undefined;
 
-  private pendingAction: PendingShadowAction | undefined;
+  private pendingAction: PendingGotoAction | undefined;
   private transitionKey: string | undefined;
   private admissionHold: IDisposable | undefined;
 
@@ -59,7 +59,7 @@ export class AgentShadowModeService extends Service implements IAgentShadowModeS
     super();
 
     if (this.agentCtx.agentId === MAIN_AGENT_ID) {
-      this._register(new ShadowModeInjection(reminders, this, context, states));
+      this._register(new GotoModeInjection(reminders, this, context, states));
     }
     this._register(
       this.eventBus.subscribe('turn.ended', () => {
@@ -73,8 +73,8 @@ export class AgentShadowModeService extends Service implements IAgentShadowModeS
           }
           this.releaseAdmissionHold();
           const message = error instanceof Error ? error.message : String(error);
-          this.reminders.notify(`Shadow mode ${pending.action} failed: ${message}`, {
-            variant: SHADOW_MODE_FAILURE_REMINDER_VARIANT,
+          this.reminders.notify(`GOTO ${pending.action} failed: ${message}`, {
+            variant: GOTO_MODE_FAILURE_REMINDER_VARIANT,
           });
         });
       }),
@@ -98,7 +98,7 @@ export class AgentShadowModeService extends Service implements IAgentShadowModeS
     if (!this.hostSupported()) {
       throw new Error2(
         ErrorCodes.SESSION_SHADOW_INVALID,
-        'Shadow mode is not supported by this host',
+        'GOTO is not supported by this host',
       );
     }
     const root = resolveShadowTargetRoot(path, {
@@ -128,7 +128,7 @@ export class AgentShadowModeService extends Service implements IAgentShadowModeS
     if (status === null) {
       throw new Error2(
         ErrorCodes.SESSION_SHADOW_INVALID,
-        'Shadow mode exit requested outside a shadow session',
+        'GOBACK requested outside a shadow session',
       );
     }
     this.armPending({ action: 'exit' });
@@ -159,22 +159,22 @@ export class AgentShadowModeService extends Service implements IAgentShadowModeS
     if (this.agentCtx.agentId !== MAIN_AGENT_ID) {
       throw new Error2(
         ErrorCodes.SESSION_SHADOW_INVALID,
-        'Shadow mode is only available to the main agent',
+        'GOTO is only available to the main agent',
       );
     }
   }
 
-  private armPending(pending: PendingShadowAction): void {
+  private armPending(pending: PendingGotoAction): void {
     if (this.pendingAction !== undefined) {
       throw new Error2(
         ErrorCodes.SESSION_SHADOW_INVALID,
-        'A shadow mode switch is already pending',
+        'A GOTO switch is already pending',
       );
     }
     this.pendingAction = pending;
   }
 
-  private async runPending(pending: PendingShadowAction): Promise<void> {
+  private async runPending(pending: PendingGotoAction): Promise<void> {
     if (pending.action === 'enter') {
       await this.coordinator.enterShadow(this.sessionCtx.sessionId, pending.root);
       return;

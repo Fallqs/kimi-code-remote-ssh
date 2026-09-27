@@ -1,16 +1,16 @@
-# Shadow mode
+# GOTO (shadow sessions)
 
-Shadow mode lets an agent temporarily continue the conversation in another
+GOTO lets an agent temporarily continue the conversation in another
 environment — most commonly when a session bound to a remote (`ssh://`)
-workspace needs access to the local machine. EnterShadowMode forks the
-session into a shadow session rooted at the shadow target; ExitShadowMode
+workspace needs access to the local machine. GOTO forks the
+session into a shadow session rooted at the target path; GOBACK
 merges the shadow session's conversation rows back into the original session
 and discards the shadow. The fork/switch/merge is designed to be fully
 transparent to clients: the session keeps its original id throughout, and
 each phase behaves like an ordinary session fork.
 
-EnterShadowMode accepts an optional `path` argument selecting the shadow
-target, mirroring workspace-creation semantics:
+GOTO accepts an optional `path` argument selecting the target, mirroring
+workspace-creation semantics:
 
 - omitted: the local kimi home (`~/.kimi-code`)
 - an absolute local path (`~` is expanded): any directory on the local
@@ -32,7 +32,7 @@ These are the behaviors covered by the unit suites
 `kap-server/test/sessionEventBroadcaster.test.ts`) and by end-to-end testing
 against the web UI.
 
-### Entering shadow mode
+### Entering GOTO
 
 - The switch happens at a turn boundary, never mid-turn.
 - The shadow session is a full wire fork of the source, created under the
@@ -59,7 +59,7 @@ against the web UI.
   restore, archive, and child-session creation all fail until the exit.
 - The frozen source session never resolves for prompts or messages.
 
-### Exiting shadow mode
+### Going back
 
 - The shadow main agent's post-fork context rows are appended to the source
   main agent, and the source turn clock is realigned by replaying the
@@ -87,9 +87,9 @@ against the web UI.
 ### Subagents
 
 - The shadow feature is assembled only for the main agent: subagents never
-  see the EnterShadowMode / ExitShadowMode tools, report no shadow status,
+  see the GOTO / GOBACK tools, report no shadow status,
   and have their enter/exit requests rejected.
-- Subagents created inside shadow mode are ordinary subagents of the shadow
+- Subagents created inside GOTO are ordinary subagents of the shadow
   session: they inherit its execution environment and run in the shadow
   workdir, exactly like the main agent does while shadowed.
 
@@ -99,3 +99,10 @@ against the web UI.
   render with message-level fidelity after exit; the shadow session's
   richer per-step wire records (step timing, task output tails) are
   discarded with the shadow session.
+- The GOTO reminder keeps the injection variant string `shadow_mode` (the
+  provider registration id and the `reminder.notify` variant). The variant
+  is persisted in `context.append_message` wire records via the message
+  origin, and the provider locates its earlier injections by that string, so
+  renaming it would break the dedup/refresh bookkeeping of sessions that
+  were already in GOTO when the server restarted.
+

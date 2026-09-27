@@ -8,20 +8,20 @@ import { Feature } from '#/features/feature';
 import { registerFeature } from '#/features/featureRegistry';
 import { MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 
-import { SHADOW_MODE_FLAG_ID } from './flags';
-import { IAgentShadowModeService } from './shadow';
+import { GOTO_MODE_FLAG_ID } from './flags';
+import { GotoModeService } from './gotoModeService';
+import { IAgentGotoModeService } from './shadow';
 import { IShadowSessionCoordinator } from './shadowCoordinator';
 import { ShadowSessionCoordinatorService } from './shadowCoordinatorService';
 import { IShadowRegistry, ShadowRegistryService } from './shadowRegistry';
-import { AgentShadowModeService } from './shadowService';
-import { IEnterShadowModeTool } from './tools/enter-shadow-mode/enter-shadow-mode';
-import { EnterShadowModeTool } from './tools/enter-shadow-mode/enterShadowModeTool';
-import { IExitShadowModeTool } from './tools/exit-shadow-mode/exit-shadow-mode';
-import { ExitShadowModeTool } from './tools/exit-shadow-mode/exitShadowModeTool';
+import { IGoBackTool } from './tools/goback/goBack';
+import { GoBackTool } from './tools/goback/goBackTool';
+import { IGotoTool } from './tools/goto/goto';
+import { GotoTool } from './tools/goto/gotoTool';
 
-export function shadowToolWhen(accessor: ServicesAccessor): boolean {
+export function gotoToolWhen(accessor: ServicesAccessor): boolean {
   return (
-    accessor.get(IFlagService).enabled(SHADOW_MODE_FLAG_ID) &&
+    accessor.get(IFlagService).enabled(GOTO_MODE_FLAG_ID) &&
     accessor.get(IAgentScopeContext).agentId === MAIN_AGENT_ID
   );
 }
@@ -37,16 +37,16 @@ export class ShadowFeature extends Feature {
       ShadowSessionCoordinatorService,
     );
     this.contributeService(LifecycleScope.App, IShadowRegistry, ShadowRegistryService);
-    this.contributeAgentService(IAgentShadowModeService, AgentShadowModeService);
-    this.contributeTool(IEnterShadowModeTool, EnterShadowModeTool, {
-      name: 'EnterShadowMode',
-      domain: 'shadow',
-      when: shadowToolWhen,
+    this.contributeAgentService(IAgentGotoModeService, GotoModeService);
+    this.contributeTool(IGotoTool, GotoTool, {
+      name: 'GOTO',
+      domain: 'goto',
+      when: gotoToolWhen,
     });
-    this.contributeTool(IExitShadowModeTool, ExitShadowModeTool, {
-      name: 'ExitShadowMode',
-      domain: 'shadow',
-      when: shadowToolWhen,
+    this.contributeTool(IGoBackTool, GoBackTool, {
+      name: 'GOBACK',
+      domain: 'goto',
+      when: gotoToolWhen,
     });
   }
 }

@@ -35,19 +35,19 @@ import {
   type SessionShadowSwitchedEvent,
   type ShadowSwitchInfo,
 } from './shadowCoordinator';
-import { IAgentShadowModeService } from './shadow';
+import { IAgentGotoModeService } from './shadow';
 import { IShadowRegistry } from './shadowRegistry';
 import { isShadowTargetRemote, resolveShadowTargetRoot } from './shadowTarget';
 
 function shadowEnterContinuation(root: string): string {
   if (isShadowTargetRemote(root)) {
-    return `[shadow mode] You are now in the shadow session: your execution environment is the remote host ${root} (over SSH). The original session is preserved untouched as the checkpoint. Continue your task; call ExitShadowMode when the remote work is done.`;
+    return `[GOTO] You are now in ${root} (over SSH). The original session is preserved untouched as the checkpoint. Continue your task; call GOBACK when the remote work is done.`;
   }
-  return `[shadow mode] You are now in the shadow session: your execution environment is the local machine, rooted at ${root}. The original session is preserved untouched as the checkpoint. Continue your task; call ExitShadowMode when the local work is done.`;
+  return `[GOTO] You are now in ${root}. The original session is preserved untouched as the checkpoint. Continue your task; call GOBACK when the local work is done.`;
 }
 
 const SHADOW_EXIT_CONTINUATION =
-  '[shadow mode] Exited shadow mode: the shadow session’s rows were merged back above and the shadow session was discarded. Your execution environment is restored to the original workspace. Continue your task.';
+  '[GOBACK] The shadow session’s rows were merged back above and the shadow session was discarded. Your execution environment is restored to the original workspace. Continue your task.';
 
 export class ShadowSessionCoordinatorService extends Service implements IShadowSessionCoordinator {
   declare readonly _serviceBrand: undefined;
@@ -193,7 +193,7 @@ export class ShadowSessionCoordinatorService extends Service implements IShadowS
       this.publishSwitch(info, sourceSessionId);
       await this.sessions.delete(shadowSessionId);
       await this.removeShadowWorkspaceRow(meta.custom, shadowRoot);
-      sourceMain?.accessor.get(IAgentShadowModeService).releaseAdmissionHold();
+      sourceMain?.accessor.get(IAgentGotoModeService).releaseAdmissionHold();
       return info;
     } catch (error) {
       if (sourceSessionId !== undefined) this.registry.abortTransition(sourceSessionId);

@@ -2342,7 +2342,7 @@ describe('SDKRpcClientV2 session workspace fs (readdir / searchFiles)', () => {
   });
 });
 
-describe('SDKRpcClientV2 shadow mode transparency', () => {
+describe('SDKRpcClientV2 GOTO switch transparency', () => {
   it('routes events, approvals, listings, and resume under the source id across enter/exit', async () => {
     const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-'));
     tempDirs.push(homeDir);

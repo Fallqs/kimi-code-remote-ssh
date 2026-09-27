@@ -62,6 +62,7 @@
 //     fullCompaction.lastCompactedTokenCount          src/agent/fullCompaction/fullCompactionService.ts
 //     fullCompaction.observedMaxContextTokensByModel  src/agent/fullCompaction/fullCompactionService.ts
 //     fullCompaction.wireRanges                       src/agent/fullCompaction/compactionOps.ts
+//     goto.wasActive                                  src/features/shadow/injection/gotoModeInjection.ts
 //     interruptionReminder                            src/agent/interruptionReminder/interruptionReminderOps.ts
 //     llm.requestTrace                                src/agent/llmRequester/llmRequestOps.ts
 //     llmRequester.emittedThinkingEffortWarnings      src/agent/llmRequester/llmRequesterService.ts
@@ -93,7 +94,6 @@
 //     profile.emittedToolPatternWarnings              src/agent/profile/profileService.ts
 //     runtime.binding                                 src/agent/runtimeBinding/runtimeBindingService.ts
 //     runtimeBinding                                  src/agent/runtimeBinding/runtimeBindingOps.ts
-//     shadow.wasActive                                src/features/shadow/injection/shadowModeInjection.ts
 //     shellCommand.tasks                              src/agent/shellCommand/shellCommandService.ts
 //     swarm                                           src/features/swarm/swarmOps.ts
 //     task                                            src/agent/task/taskOps.ts
@@ -1289,8 +1289,8 @@ export interface AgentStateSnapshot {
     readonly id?: string;
     readonly revisionCount?: Readonly<Record<string, number>>;
   };
-  // src/features/shadow/injection/shadowModeInjection.ts
-  'shadow.wasActive': boolean;
+  // src/features/shadow/injection/gotoModeInjection.ts
+  'goto.wasActive': boolean;
   // src/features/swarm/swarmOps.ts
   // replayable · durable — folds: SwarmModeEnter, SwarmModeExit
   'swarm': 'tool' | 'task' | 'manual' | null;
