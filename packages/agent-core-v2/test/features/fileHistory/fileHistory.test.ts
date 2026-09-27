@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, posix } from 'node:path';
 
+import { Immer } from 'immer';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
@@ -15,13 +16,17 @@ import { TurnEnded } from '#/agent/loop/turnOps';
 import { USER_PROMPT_ORIGIN } from '#/agent/contextMemory/types';
 import { IEventBus, type ISessionEventBus } from '#/app/event/eventBus';
 import { EventBusService } from '#/app/event/eventBusService';
-import type { IFlagService } from '#/app/flag/flag';
-import { IAgentFileHistoryService } from '#/features/fileHistory/fileHistory';
+import { IAgentFileHistoryService, type FileBackupEntry, type FileHistoryState } from '#/features/fileHistory/fileHistory';
 import { AgentFileHistoryService, countLineDiff } from '#/features/fileHistory/fileHistoryService';
-import { displacedCheckpoints } from '#/features/fileHistory/fileHistoryOps';
+import {
+  displacedCheckpoints,
+  fileHistoryKey,
+  FileHistoryCheckpointed,
+  FileHistoryTracked,
+} from '#/features/fileHistory/fileHistoryOps';
+import type { FoldContext } from '#/state/state';
 import type { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
-import { FILE_HISTORY_FLAG_ENV } from '#/features/fileHistory/flag';
-import type { ToolCall } from '#/kosong/contract/message';
+import type { ToolCall } from '#human/llm/message';
 import type { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
@@ -39,7 +44,7 @@ import type { RunnableToolExecution } from '#/tool/toolContract';
 import { createFakeHostFs } from '../../tools/fixtures/fake-exec';
 import { stubToolExecutorEvents, type ToolExecutorEventStubs } from '../../agent/toolExecutor/stubs';
 import { registerTestAgentWire, registerTestEventDispatcher, testWireScope } from '../../wire/stubs';
-import { createTestAgent } from '../../harness';
+import { createTestAgent, homeDirServices } from '../../harness';
 
 const SCOPE = 'wire';
 const KEY = 'file-history-test';
@@ -56,7 +61,6 @@ describe('AgentFileHistoryService', () => {
   let blobs: IBlobStore;
   let scopeCtx: IAgentScopeContext;
   let files: Map<string, Uint8Array>;
-  let flagEnabled: boolean;
 
   beforeEach(() => {
     disposables = new DisposableStore();
@@ -79,7 +83,6 @@ describe('AgentFileHistoryService', () => {
     executorEvents = stubToolExecutorEvents();
     blobs = new BlobStoreService(new InMemoryStorageService());
     files = new Map();
-    flagEnabled = true;
   });
 
   afterEach(() => {
@@ -119,7 +122,6 @@ describe('AgentFileHistoryService', () => {
       agentId === scopeCtx.agentId
         ? scopeCtx
         : makeAgentScopeContext({ agentId, agentScope: testWireScope(SCOPE, KEY) });
-    const flags = { enabled: () => flagEnabled } as unknown as IFlagService;
     const workspace = {
       workDir: WORK_DIR,
       additionalDirs: [],
@@ -138,7 +140,6 @@ describe('AgentFileHistoryService', () => {
         executorEvents.executor,
         eventBus,
         ix.get(IEventDispatcher),
-        flags,
         stubRuntime(),
             blobs,
           workspace,
@@ -312,19 +313,6 @@ describe('AgentFileHistoryService', () => {
     ]);
   });
 
-  it('does nothing while the flag is off', async () => {
-    flagEnabled = false;
-    const service = createService();
-    setFile('/ws/a.txt', 'content\n');
-
-    startTurn(1);
-    await fireEdit(service, '/ws/a.txt', 1);
-    await service.settled();
-
-    const state = service.history();
-    expect(state.checkpoints).toEqual([]);
-    expect(state.tracked).toEqual([]);
-  });
 
   it('excludes user edits between turns via the end-of-turn checkpoint', async () => {
     const service = createService();
@@ -349,25 +337,6 @@ describe('AgentFileHistoryService', () => {
     expect(await service.contentAt(2, 'a.txt')).toBeUndefined();
   });
 
-  it('guards reads once the flag is turned off after data was recorded', async () => {
-    const service = createService();
-    setFile('/ws/a.txt', 'content\n');
-
-    startTurn(1);
-    await fireEdit(service, '/ws/a.txt', 1);
-    setFile('/ws/a.txt', 'changed\n');
-    endTurn(1);
-    startTurn(2);
-    await service.settled();
-    expect(await service.changes(1)).toEqual([
-      { path: 'a.txt', status: 'modified', additions: 1, deletions: 1 },
-    ]);
-    expect((await service.contentAt(1, 'a.txt'))?.content).toBe('content\n');
-
-    flagEnabled = false;
-    expect(await service.changes(1)).toEqual([]);
-    expect(await service.contentAt(1, 'a.txt')).toBeUndefined();
-  });
 
   it('reports an over-budget modified file as oversize with no counts', async () => {
     const service = createService();
@@ -472,6 +441,28 @@ describe('AgentFileHistoryService', () => {
     expect(await service.turnRecorded(3)).toBe(false);
   });
 
+  it('reports a deletion turn unrecorded once its baseline blob is gone', async () => {
+    const service = createService();
+    setFile('/ws/d.txt', 'gone\n');
+
+    startTurn(1);
+    await fireEdit(service, '/ws/d.txt', 1);
+    files.delete('/ws/d.txt');
+    endTurn(1);
+    await service.settled();
+
+    expect(await service.changes(1)).toEqual([
+      { path: 'd.txt', status: 'deleted', additions: 0, deletions: 1 },
+    ]);
+    expect(await service.turnRecorded(1)).toBe(true);
+
+    const keyed = Object.values(
+      service.history().checkpoints.find((c) => c.turnId === 1 && c.phase !== 'end')!.entries,
+    ).find((entry) => entry.key !== null);
+    await blobs.delete(scopeCtx.scope(), keyed!.key!);
+    expect(await service.turnRecorded(1)).toBe(false);
+  });
+
   it('keeps a shared baseline blob alive until its last window reference leaves', async () => {
     const service = createService();
     setFile('/ws/s.txt', 'base\n');
@@ -522,19 +513,12 @@ describe('AgentFileHistoryService', () => {
 });
 
 describe('file history through real scripted turns', () => {
-  beforeEach(() => {
-    process.env[FILE_HISTORY_FLAG_ENV] = '1';
-  });
-
-  afterEach(() => {
-    delete process.env[FILE_HISTORY_FLAG_ENV];
-  });
-
   it('checkpoints edits across turns and serves exact per-turn changes', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'file-history-e2e-'));
+    const home = await mkdtemp(join(tmpdir(), 'file-history-home-'));
     const file = join(dir, 'notes.txt');
     await writeFile(file, 'alpha\nbeta\n');
-    const ctx = createTestAgent();
+    const ctx = createTestAgent(homeDirServices(home));
     try {
       await ctx.rpc.setPermission({ mode: 'yolo' });
 
@@ -582,9 +566,14 @@ describe('file history through real scripted turns', () => {
         { path: file, status: 'modified', additions: 1, deletions: 1 },
       ]);
       expect(await service.changes(1)).toEqual([]);
+
+      expect(await service.turnRecorded(0)).toBe(true);
+      expect(await service.turnRecorded(1)).toBe(false);
+      expect(await service.turnRecorded(99)).toBe(false);
     } finally {
       await ctx.dispose();
       await rm(dir, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true });
     }
   });
 
@@ -677,5 +666,184 @@ describe('countLineDiff', () => {
     const budget = { remaining: 10 };
     expect(countLineDiff(before, after, budget)).toBeUndefined();
     expect(budget.remaining).toBe(10);
+  });
+});
+
+describe('fileHistoryKey folds at scale', () => {
+  interface ReferenceCheckpoint {
+    turnId: number;
+    phase?: 'start' | 'end';
+    entries: Record<string, FileBackupEntry>;
+  }
+
+  interface ReferenceState {
+    checkpoints: ReferenceCheckpoint[];
+    tracked: string[];
+  }
+
+  type FoldEvent = FileHistoryTracked | FileHistoryCheckpointed;
+
+  function referenceFold(state: ReferenceState, event: FoldEvent): void {
+    if (event instanceof FileHistoryCheckpointed) {
+      const phase = event.phase ?? 'start';
+      const existing = state.checkpoints.find(
+        (c) => c.turnId === event.turnId && (c.phase ?? 'start') === phase,
+      );
+      if (existing !== undefined) {
+        existing.entries = { ...event.entries };
+        return;
+      }
+      state.checkpoints.push({ turnId: event.turnId, phase, entries: { ...event.entries } });
+      const displaced = new Set(displacedCheckpoints(state.checkpoints));
+      if (displaced.size > 0) {
+        state.checkpoints = state.checkpoints.filter((c) => !displaced.has(c));
+        const kept = new Set<string>();
+        for (const checkpoint of state.checkpoints) {
+          for (const path of Object.keys(checkpoint.entries)) kept.add(path);
+        }
+        state.tracked = state.tracked.filter((path) => kept.has(path));
+      }
+      return;
+    }
+    if (!state.tracked.includes(event.path)) state.tracked.push(event.path);
+    let checkpoint = state.checkpoints.find(
+      (c) => c.turnId === event.turnId && (c.phase ?? 'start') === 'start',
+    );
+    if (checkpoint === undefined) {
+      state.checkpoints.push({ turnId: event.turnId, phase: 'start', entries: {} });
+      checkpoint = state.checkpoints.at(-1);
+    }
+    if (checkpoint !== undefined && !Object.hasOwn(checkpoint.entries, event.path)) {
+      checkpoint.entries[event.path] = { ...event.entry };
+    }
+  }
+
+  function scriptedEvents(): FoldEvent[] {
+    const events: FoldEvent[] = [];
+    const agentId = 'main';
+    let pathCounter = 0;
+    for (let turn = 1; turn <= 40; turn += 1) {
+      const touched: string[] = [];
+      for (let edit = 0; edit < 8; edit += 1) {
+        if (turn <= 15 && edit < 3) pathCounter += 1;
+        const path =
+          turn <= 15 && edit < 3
+            ? `src/module-${String(pathCounter)}.ts`
+            : `src/module-${String(1 + ((turn * 7 + edit * 13) % pathCounter))}.ts`;
+        touched.push(path);
+        events.push(
+          new FileHistoryTracked({
+            agentId,
+            turnId: turn,
+            path,
+            entry: { key: `blob-${path}-${String(turn)}`, version: turn },
+          }),
+        );
+      }
+      if (turn === 10 || turn === 25) {
+        events.push(
+          new FileHistoryCheckpointed({
+            agentId,
+            turnId: turn,
+            phase: 'end',
+            entries: { 'replaced.txt': { key: 'replaced-key', version: 99 } },
+          }),
+        );
+      }
+      if (turn === 12) {
+        events.push(
+          new FileHistoryCheckpointed({
+            agentId,
+            turnId: 12,
+            entries: { 'start-replaced.txt': { key: null, version: 7 } },
+          }),
+        );
+      }
+      events.push(
+        new FileHistoryCheckpointed({
+          agentId,
+          turnId: turn,
+          phase: 'end',
+          entries: Object.fromEntries(
+            touched.map((path) => [path, { key: `end-${path}`, version: turn }]),
+          ),
+        }),
+      );
+      if (turn === 30) {
+        events.push(
+          new FileHistoryTracked({
+            agentId,
+            turnId: 5,
+            path: 'src/module-1.ts',
+            entry: { key: 'late-touch', version: 30 },
+          }),
+        );
+      }
+    }
+    return events;
+  }
+
+  const replayImmer = new Immer({ autoFreeze: false });
+
+  const foldCtx: FoldContext = {
+    silent: true,
+    checkpoint: () => {},
+    clearCheckpoints: () => {},
+    undoToCheckpoint: () => {},
+    emit: () => {},
+  };
+
+  function foldEvents(
+    events: readonly FoldEvent[],
+    initial: FileHistoryState,
+    reference: ReferenceState,
+  ): FileHistoryState {
+    let state = initial;
+    for (const event of events) {
+      const fold = fileHistoryKey.replayable.folds.get(
+        event instanceof FileHistoryCheckpointed ? FileHistoryCheckpointed : FileHistoryTracked,
+      )!;
+      state = replayImmer.produce(state, (draft) => {
+        fold(draft, event, foldCtx);
+      });
+      referenceFold(reference, event);
+      expect(state.tracked).toEqual(reference.tracked);
+      expect(state.checkpoints).toEqual(reference.checkpoints);
+    }
+    return state;
+  }
+
+  function freshState(): FileHistoryState {
+    return fileHistoryKey.initial() as FileHistoryState;
+  }
+
+  it('folds many tracked paths and checkpoints to the same state as the linear reference', () => {
+    const events = scriptedEvents();
+    const first = foldEvents(events, freshState(), { checkpoints: [], tracked: [] });
+
+    expect(first.checkpoints).toHaveLength(10);
+    expect(Math.min(...first.checkpoints.map((c) => c.turnId))).toBe(36);
+    expect(first.checkpoints.some((c) => c.turnId === 10)).toBe(false);
+    const endOf40 = first.checkpoints.find((c) => c.turnId === 40 && c.phase === 'end');
+    expect(endOf40?.entries['src/module-5.ts']).toEqual({
+      key: 'end-src/module-5.ts',
+      version: 40,
+    });
+    const keptPaths = new Set(first.checkpoints.flatMap((c) => Object.keys(c.entries)));
+    expect(first.tracked).toHaveLength(keptPaths.size);
+    expect(first.tracked).toContain('src/module-5.ts');
+
+    const second = foldEvents(events, freshState(), { checkpoints: [], tracked: [] });
+    expect(second).toEqual(first);
+  });
+
+  it('resumes folding from a mid-sequence state snapshot identically', () => {
+    const events = scriptedEvents();
+    const split = 200;
+    const reference: ReferenceState = { checkpoints: [], tracked: [] };
+    const snapshot = foldEvents(events.slice(0, split), freshState(), reference);
+    const continued = foldEvents(events.slice(split), snapshot, structuredClone(reference));
+    const fresh = foldEvents(events, freshState(), { checkpoints: [], tracked: [] });
+    expect(continued).toEqual(fresh);
   });
 });

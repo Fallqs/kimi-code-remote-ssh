@@ -3,9 +3,8 @@ import { assign, fromCallback, sendTo, setup, type Snapshot } from 'xstate';
 
 import { createDecorator, IInstantiationService } from '#/_base/di/instantiation';
 import { IntervalTimer } from '#/_base/utils/timer';
-import type { CronJobOrigin, CronMissedOrigin, ContextMessage } from '#/agent/contextMemory/types';
+import type { CronJobOrigin, CronMissedOrigin } from '#/agent/contextMemory/types';
 import { IAgentLoopService, type Turn } from '#/agent/loop/loop';
-import { IAgentPromptService } from '#/agent/prompt/prompt';
 import {
   AgentActorService,
   type AgentActorContext,
@@ -23,7 +22,7 @@ import { jitteredNextCronRunMs, oneShotJitteredNextCronRunMs } from '#/features/
 import type { CronDeletedEvent, CronScheduledEvent } from '#/app/telemetry/events';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { BugIndicatingError } from '#/errors';
-import type { ContentPart } from '#/kosong/contract/message';
+import type { ContentPart } from '#human/llm/message';
 import { MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 
@@ -173,16 +172,17 @@ function deliverFire(
     coalescedCount: context.coalescedCount,
     stale: isStaleAt(runtime, task, context.firedAt),
   };
-  const message: ContextMessage = {
-    role: 'user',
-    content: [{ type: 'text', text: renderCronFireXml(origin, task.prompt) }],
-    toolCalls: [],
-    origin,
-  };
-  const buffered = runtime.get(IAgentLoopService).status().state === 'running';
+  const buffered = runtime.get(IAgentLoopService).snapshot().state === 'running';
   let launched: Promise<Turn | undefined>;
   try {
-    launched = runtime.get(IAgentPromptService).inject(message);
+    const { id } = runtime.get(IAgentLoopService).submit(
+      {
+        message: { role: 'user', content: [{ type: 'text', text: renderCronFireXml(origin, task.prompt) }] },
+        meta: { origin },
+      },
+      { steerIfActive: true },
+    );
+    launched = runtime.get(IAgentLoopService).promptHandle(id)?.launched ?? Promise.resolve(undefined);
   } catch (error) {
     debugLog(runtime, `steer threw for task ${task.id}: ${error instanceof Error ? error.message : String(error)}`);
     return Promise.resolve(false);
@@ -275,7 +275,7 @@ async function tickCron(
 ): Promise<void> {
   await configOf(runtime).ready;
   if (cronConfigOf(runtime).disabled || runtime.getState().size === 0) return;
-  if (runtime.get(IAgentLoopService).status().state === 'running') return;
+  if (runtime.get(IAgentLoopService).snapshot().state === 'running') return;
   const now = state.clocks.wallNow();
   await Promise.all([...runtime.getState().values()].map((task) => processDue(runtime, state, task, now)));
 }
@@ -535,13 +535,13 @@ export class AgentCronService extends AgentActorService<CronModelState> implemen
   ): Turn | undefined {
     if (tasks.length === 0) return undefined;
     const origin: CronMissedOrigin = { kind: 'cron_missed', count: tasks.length };
-    const message: ContextMessage = {
-      role: 'user',
-      content: [...renderMissedNotification(tasks)],
-      toolCalls: [],
-      origin,
-    };
-    void this.actor.get(IAgentPromptService).inject(message).catch(() => {});
+    this.actor.get(IAgentLoopService).submit(
+      {
+        message: { role: 'user', content: [...renderMissedNotification(tasks)] },
+        meta: { origin },
+      },
+      { steerIfActive: true },
+    );
     telemetryOf(this.actor).track2(CRON_MISSED, { count: tasks.length });
     return undefined;
   }

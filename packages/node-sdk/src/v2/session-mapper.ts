@@ -9,7 +9,6 @@
  *   where the v1 `SessionMeta` keeps ISO strings and `workDir`.
  * Everything else is a field rename (`custom` ↔ `metadata`).
  */
-import type { AgentMeta, SessionMeta } from '@moonshot-ai/agent-core';
 import {
   SHADOW_ACTIVE_METADATA_KEY,
   SHADOW_CREATED_WORKSPACE_METADATA_KEY,
@@ -22,19 +21,16 @@ import {
 
 import { resolve, win32 } from 'node:path';
 
+import type { AgentMeta, SessionMeta } from '#/replay';
 import type { JsonObject, SessionSummary } from '#/types';
 
 /**
- * Mirror of v1's `normalizeWorkDir` (`agent-core/session/store/workdir-key`):
  * Windows-shaped paths resolve through `win32` and fold to forward slashes,
- * everything else resolves against the process cwd. Duplicated here because
- * the SDK test config aliases `@moonshot-ai/agent-core` to its index, which
- * blocks the deep import — keep it byte-identical to the v1 original.
- *
- * One deliberate extension: `ssh://` workspace roots are spec strings, not
- * local paths. Resolving one against the process cwd would mangle it before
- * the engine's ssh runtime provider ever sees the spec, so ssh specs pass
- * through verbatim.
+ * everything else resolves against the process cwd. Byte-identical with the
+ * legacy v1 `normalizeWorkDir` so stored workdir keys stay stable, with one
+ * deliberate extension: `ssh://` workspace roots are spec strings, not local
+ * paths, so they pass through verbatim instead of being resolved against the
+ * process cwd.
  */
 export function normalizeWorkDir(workDir: string): string {
   if (/^ssh:\/\//i.test(workDir)) return workDir;
@@ -119,7 +115,9 @@ function v2AgentsToV1(agents: Readonly<Record<string, V2AgentMeta>>): Record<str
       // v1 persists an explicit null for a parentless agent where v2 leaves
       // the field unset.
       parentAgentId: agent.parentAgentId ?? null,
-      swarmItem: agent.swarmItem,
+      swarmItem: agent.labels?.['swarmItem'] ?? agent.swarmItem,
+      profileName: agent.labels?.['profileName'],
+      sessionInit: agent.labels?.['sessionInit'],
     };
   }
   return mapped;

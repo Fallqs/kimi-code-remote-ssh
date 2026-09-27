@@ -6,7 +6,6 @@ import { isSshWorkDirSpec } from '@moonshot-ai/remote-ssh';
 import { Emitter } from '#/_base/event';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
-import { IHostFsWatchService } from '#/os/interface/hostFsWatch';
 import { IHostProcessService } from '#/os/interface/hostProcess';
 import { IHostTerminalService } from '#/os/interface/terminal';
 
@@ -24,7 +23,6 @@ export class LocalRuntime implements Runtime {
   readonly workspace: Runtime['workspace'];
   readonly fs;
   readonly process;
-  readonly watch;
   readonly terminal;
   private currentStatus: RuntimeStatus = 'ready';
   private readonly statusEmitter = new Emitter<RuntimeStatus>();
@@ -35,14 +33,12 @@ export class LocalRuntime implements Runtime {
     environment: IHostEnvironment,
     fs: IHostFileSystem | undefined,
     process: IHostProcessService | undefined,
-    watch: IHostFsWatchService | undefined,
     terminal: IHostTerminalService | undefined,
   ) {
     this.identity = { workspaceId, runtimeId: 'local', generation: `local-${nextGeneration++}` };
     const capabilities = new Set<RuntimeCapability>();
     if (fs !== undefined) capabilities.add('fs');
     if (process !== undefined) capabilities.add('process');
-    if (watch !== undefined) capabilities.add('watch');
     if (terminal !== undefined) capabilities.add('terminal');
     this.capabilities = capabilities;
     this.environment = {
@@ -73,7 +69,6 @@ export class LocalRuntime implements Runtime {
     };
     this.fs = fs;
     this.process = process;
-    this.watch = watch;
     this.terminal = terminal;
   }
 
@@ -95,7 +90,6 @@ export class LocalRuntimeProviderFactory implements RuntimeProviderFactory {
       IHostEnvironment,
       IHostFileSystem,
       IHostProcessService,
-      IHostFsWatchService,
       IHostTerminalService,
     ],
     imports: [],
@@ -109,7 +103,6 @@ export class LocalRuntimeProviderFactory implements RuntimeProviderFactory {
       host.get(IHostEnvironment),
       host.get(IHostFileSystem),
       host.get(IHostProcessService),
-      host.get(IHostFsWatchService),
       host.get(IHostTerminalService),
     ));
     return { dispose: () => handle.remove() };

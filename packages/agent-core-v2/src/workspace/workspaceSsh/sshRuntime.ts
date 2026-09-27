@@ -19,7 +19,6 @@ import type {
   HostFileStat,
   IHostFileSystem,
 } from '#/os/interface/hostFileSystem';
-import type { HostFsChange, IHostFsWatchHandle, IHostFsWatchService, HostFsWatchOptions } from '#/os/interface/hostFsWatch';
 import type {
   HostProcessOptions,
   IHostProcess,
@@ -274,26 +273,6 @@ class SshHostProcessService implements IHostProcessService {
   }
 }
 
-class SshFsWatchHandle implements IHostFsWatchHandle {
-  readonly ready = Promise.resolve();
-  private readonly emitter = new Emitter<HostFsChange>();
-  readonly onDidChange = this.emitter.event;
-
-  dispose(): void {
-    this.emitter.dispose();
-  }
-}
-
-class SshFsWatchService implements IHostFsWatchService {
-  declare readonly _serviceBrand: undefined;
-
-  watch(path: string, options?: HostFsWatchOptions): IHostFsWatchHandle {
-    void path;
-    void options;
-    return new SshFsWatchHandle();
-  }
-}
-
 export class SshRuntime implements Runtime {
   readonly identity;
   readonly capabilities: ReadonlySet<RuntimeCapability>;
@@ -302,7 +281,6 @@ export class SshRuntime implements Runtime {
   readonly workspace: Runtime['workspace'];
   readonly fs: IHostFileSystem;
   readonly process: IHostProcessService;
-  readonly watch: IHostFsWatchService;
   readonly terminal = undefined;
   readonly connection: WorkspaceSshConnectionService;
   readonly remoteRoot: string;
@@ -316,7 +294,7 @@ export class SshRuntime implements Runtime {
     readonly client: SshPipeClient,
   ) {
     this.identity = { workspaceId, runtimeId: 'local', generation: `ssh-${nextGeneration++}` };
-    this.capabilities = new Set<RuntimeCapability>(['fs', 'process', 'watch']);
+    this.capabilities = new Set<RuntimeCapability>(['fs', 'process']);
     const facts = client.facts;
     this.environment = {
       osKind: toOsKind(facts.osKind),
@@ -347,7 +325,6 @@ export class SshRuntime implements Runtime {
     };
     this.fs = new SshHostFileSystem(this);
     this.process = new SshHostProcessService(this);
-    this.watch = new SshFsWatchService();
     this.connection = new WorkspaceSshConnectionService(client);
     this.currentStatus = toRuntimeStatus(client.state);
     this.stateSubscription = client.onStateChange((state) => {

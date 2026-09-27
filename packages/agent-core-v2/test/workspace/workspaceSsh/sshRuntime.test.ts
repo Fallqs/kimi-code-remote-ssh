@@ -11,7 +11,9 @@ import {
   registerScopedService,
 } from '#/_base/di/scope';
 import { createScopedTestHost, stubPair, type ScopedTestHost } from '#/_base/di/test';
+import { ILogService } from '#/_base/log/log';
 import { LifecycleScope } from '#/app/scopes';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IEventService } from '#/app/event/event';
 import { IFlagService } from '#/app/flag/flag';
 import { IWorkspacePersistence } from '#/app/workspace/workspacePersistence';
@@ -21,6 +23,8 @@ import { WorkspaceService } from '#/app/workspace/workspaceService';
 import { ErrorCodes } from '#/errors';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
+import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
@@ -32,6 +36,8 @@ import { SshRuntime } from '#/workspace/workspaceSsh/sshRuntime';
 import { SshRuntimeProviderFactory } from '#/workspace/workspaceSsh/sshRuntimeProvider';
 
 import { BASH, buildRtsBundle, fakeSshEnv, type FakeSshEnv } from './helpers';
+import { stubLog } from '../../_base/log/stubs';
+import { stubBootstrap } from '../../app/bootstrap/stubs';
 
 const itBash = BASH === undefined ? it.skip : it;
 
@@ -108,7 +114,7 @@ describe('SshRuntimeProviderFactory', () => {
     expect(ssh).toBeInstanceOf(SshRuntime);
     expect(ssh.identity.runtimeId).toBe('local');
     expect(ssh.status).toBe('ready');
-    expect([...ssh.capabilities].sort()).toEqual(['fs', 'process', 'watch']);
+    expect([...ssh.capabilities].toSorted()).toEqual(['fs', 'process']);
     expect(ssh.environment.pathClass).toBe('posix');
     expect(ssh.workspace.mapRoots({ workDir: 'ssh://fakehost/tmp/x' }).workDir).toBe('/tmp/x');
     expect(ssh.workspace.mapRoots({ workDir: '/plain/path' }).workDir).toBe('/plain/path');
@@ -208,6 +214,9 @@ describe('ssh roots through IWorkspaceService.createOrTouch', () => {
     host = createScopedTestHost([
       stubPair(IFileSystemStorageService, fileStorage),
       stubPair(IAtomicDocumentStore, new JsonAtomicDocumentStore(fileStorage)),
+      stubPair(IAppendLogStore, new AppendLogStore(fileStorage)),
+      stubPair(ILogService, stubLog()),
+      stubPair(IBootstrapService, stubBootstrap(homeDir)),
       stubPair(IHostFileSystem, noLocalFs()),
       stubPair(IEventService, {
         publish: () => {},

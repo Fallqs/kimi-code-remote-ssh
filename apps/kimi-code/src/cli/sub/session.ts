@@ -9,7 +9,6 @@
 import { setTelemetryContext, track, withTelemetryContext } from '@moonshot-ai/kimi-telemetry';
 import {
   createKimiHarness,
-  createKimiHarnessV2,
   type KimiHarness,
   type ListSessionsOptions,
   type SessionSummary,
@@ -19,8 +18,6 @@ import type { Command } from 'commander';
 
 import { createCliTelemetryBootstrap } from '#/cli/telemetry';
 import { createKimiCodeHostIdentity } from '#/cli/version';
-
-import { isKimiV2Enabled } from '../experimental-v2';
 
 interface WritableLike {
   write(chunk: string): boolean;
@@ -106,7 +103,7 @@ function createDefaultSessionListDeps(
     setContext: setTelemetryContext,
   };
   const getHarness = (): KimiHarness => {
-    harness ??= (isKimiV2Enabled() ? createKimiHarnessV2 : createKimiHarness)({
+    harness ??= createKimiHarness({
       homeDir: createCliTelemetryBootstrap().homeDir,
       identity,
       telemetry: telemetryClient,
@@ -135,7 +132,7 @@ function formatRow(summary: SessionSummary, showWorkDir: boolean): string {
 }
 
 function sanitizeField(value: string): string {
-  return value.replaceAll(/[\x00-\x1f\x7f]+/g, ' ').trim();
+  return value.replaceAll(/[\x00-\x1F\x7F]+/g, ' ').trim();
 }
 
 function formatTimestamp(epochMs: number): string {

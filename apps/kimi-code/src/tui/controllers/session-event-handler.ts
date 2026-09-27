@@ -77,15 +77,18 @@ import { nextTranscriptId } from '../utils/transcript-id';
 import type { BtwPanelController } from './btw-panel';
 import { isPluginMcpToolName, PluginUpdateNotifier } from './plugin-update-notifier';
 import type { StreamingUIController } from './streaming-ui';
+import type { SurveyController } from './survey-controller';
 import type { TasksBrowserController } from './tasks-browser';
 import { SubAgentEventHandler } from './subagent-event-handler';
-import type {
-  AppState,
-  LivePaneState,
-  QueuedMessage,
-  ToolCallBlockData,
-  ToolResultBlockData,
-  TranscriptEntry,
+import { NotifyController } from './notify';
+import {
+  sumTokenUsage,
+  type AppState,
+  type LivePaneState,
+  type QueuedMessage,
+  type ToolCallBlockData,
+  type ToolResultBlockData,
+  type TranscriptEntry,
 } from '../types';
 import type { TUIState } from '../tui-state';
 import { createGoal as startGoalCommand } from '../commands/goal';
@@ -123,9 +126,11 @@ export interface SessionEventHost {
   handleTurnEnded?(event: TurnEndedEvent): void;
   readonly btwPanelController: BtwPanelController;
   readonly tasksBrowserController: TasksBrowserController;
+  readonly surveyController: SurveyController;
 }
 
 export class SessionEventHandler {
+  readonly notifications: NotifyController;
   readonly subAgentEventHandler: SubAgentEventHandler;
   private readonly pluginUpdateNotifier: PluginUpdateNotifier;
 
@@ -133,6 +138,7 @@ export class SessionEventHandler {
     private readonly host: SessionEventHost,
     pluginUpdateNotifier?: PluginUpdateNotifier,
   ) {
+    this.notifications = new NotifyController(host.state);
     this.subAgentEventHandler = new SubAgentEventHandler(host, {
       backgroundTasks: this.backgroundTasks,
       backgroundTaskTranscriptedTerminal: this.backgroundTaskTranscriptedTerminal,
@@ -175,6 +181,7 @@ export class SessionEventHandler {
     this.backgroundTasks.clear();
     this.backgroundTaskTranscriptedTerminal.clear();
     this.subAgentEventHandler.resetRuntimeState();
+    this.notifications.reset();
     this.renderedSkillActivationIds.clear();
     this.renderedPluginCommandActivationIds.clear();
     this.renderedMcpServerStatusKeys.clear();
@@ -260,6 +267,7 @@ export class SessionEventHandler {
   }
 
   handleEvent(event: Event, sendQueued: (item: QueuedMessage) => void): void {
+    this.notifications.handleEvent(event);
     if (this.subAgentEventHandler.routeChildAgentEvent(event)) return;
 
     if ('turnId' in event && event.turnId !== undefined) {
@@ -294,10 +302,13 @@ export class SessionEventHandler {
       case 'compaction.blocked': break;
       case 'compaction.cancelled': this.handleCompactionCancel(event, sendQueued); break;
       case 'subagent.spawned':
+        this.host.surveyController.notifySubagentSpawned(event);
+        this.subAgentEventHandler.handleLifecycleEvent(event); break;
       case 'subagent.started':
       case 'subagent.suspended':
       case 'subagent.completed':
       case 'subagent.failed':
+      case 'subagent.cancelled':
         this.subAgentEventHandler.handleLifecycleEvent(event); break;
       case 'background.task.started':
       case 'background.task.terminated':
@@ -610,6 +621,7 @@ export class SessionEventHandler {
 
   private handleToolCall(event: ToolCallStartedEvent): void {
     const { streamingUI } = this.host;
+    this.host.surveyController.notifyToolCallStarted(event.toolCallId, event.name);
     streamingUI.flushNow();
     const { turnId, step } = streamingUI.getTurnContext();
     const toolCall: ToolCallBlockData = {
@@ -673,6 +685,7 @@ export class SessionEventHandler {
 
   private handleToolResult(event: ToolResultEvent): void {
     const { streamingUI } = this.host;
+    this.host.surveyController.notifyToolCallEnded(event.toolCallId);
     streamingUI.flushNow();
     this.clearStepRetry();
     const resultData: ToolResultBlockData = {
@@ -734,6 +747,9 @@ export class SessionEventHandler {
     }
     if (event.model !== undefined) patch.model = event.model;
     if (event.thinkingEffort !== undefined) patch.thinkingEffort = event.thinkingEffort;
+    if (event.usage?.total !== undefined) {
+      patch.cumulativeTokens = sumTokenUsage(event.usage.total);
+    }
     if (Object.keys(patch).length > 0) this.host.setAppState(patch);
     if (event.swarmMode === false) {
       this.host.state.swarmModeEntry = undefined;
@@ -1130,6 +1146,7 @@ export class SessionEventHandler {
     // is expected). Cancellations do neither: the context was not cut.
     this.host.recordSessionActivity();
     this.host.noteCompactionFinished();
+    this.host.surveyController.notifyCompactionFinished();
     this.finishCompaction(sendQueued);
   }
 

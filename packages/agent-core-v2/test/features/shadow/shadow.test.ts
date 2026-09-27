@@ -5,7 +5,6 @@ import { DisposableStore } from '#/_base/di/lifecycle';
 import { TestInstantiationService } from '#/_base/di/test';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentLoopService } from '#/agent/loop/loop';
-import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { turnKey, TurnPrompt } from '#/agent/loop/turnOps';
@@ -412,7 +411,7 @@ function fakeSessionHandle(opts: FakeSessionHandleOpts) {
         if (token === IAgentContextMemoryService) {
           return { get: () => opts.contextMessages, append: opts.append };
         }
-        if (token === IAgentPromptService) return { enqueue: opts.enqueue };
+        if (token === IAgentLoopService) return { submit: opts.enqueue };
         if (token === IAgentShadowModeService) return { releaseAdmissionHold };
         if (token === IAgentStateService) {
           return {

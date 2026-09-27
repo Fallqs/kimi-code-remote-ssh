@@ -1,5 +1,5 @@
-import { estimateTokens, estimateTokensForMessage, estimateTokensForMessages } from '#/kosong/contract/tokens';
-import type { ContentPart } from '#/kosong/contract/message';
+import { estimateTokens, estimateTokensForMessage, estimateTokensForMessages } from '#/llm-adapter/contract/tokens';
+import type { ContentPart } from '#human/llm/message';
 import { wrapSystemReminder } from '#/features/reminder/systemReminder';
 import summaryPrefixTemplate from './compaction-summary-prefix.md?raw';
 import type { ContextMessage, PromptOrigin } from './types';
@@ -340,9 +340,9 @@ function truncateTextToTokensFromEnd(text: string, maxTokens: number): string {
   let start = text.length;
   for (let i = text.length - 1; i >= 0; i--) {
     let isAscii = false;
-    const code = text.charCodeAt(i);
+    const code = text.codePointAt(i);
     if (code >= 0xdc00 && code <= 0xdfff && i > 0) {
-      const high = text.charCodeAt(i - 1);
+      const high = text.codePointAt(i - 1);
       if (high >= 0xd800 && high <= 0xdbff) {
         i--;
       }

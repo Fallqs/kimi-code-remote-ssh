@@ -3,7 +3,7 @@ import { Service } from '#/_base/di/service';
 import { workspaceRootKey } from '#/_base/utils/workdir-slug';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { PromptOrigin } from '#/agent/contextMemory/types';
-import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { turnKey, TurnPrompt } from '#/agent/loop/turnOps';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
@@ -14,7 +14,7 @@ import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IWorkspaceService } from '#/app/workspace/workspace';
 import { IWorkspaceInstanceManager } from '#/workspace/workspaceInstance/workspaceInstanceManager';
 import { Error2, ErrorCodes } from '#/errors';
-import type { ContentPart } from '#/kosong/contract/message';
+import type { ContentPart } from '#human/llm/message';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -269,17 +269,16 @@ export class ShadowSessionCoordinatorService extends Service implements IShadowS
     const agents = handle.accessor.get(IAgentLifecycleService);
     const agent = agents.handleOf(agentId);
     if (agent === undefined) return;
-    void agent.accessor
-      .get(IAgentPromptService)
-      .enqueue({
-        message: {
-          role: 'user',
-          content: [{ type: 'text', text }],
-          toolCalls: [],
-          origin: { kind: 'user' },
+    try {
+      agent.accessor.get(IAgentLoopService).submit(
+        {
+          message: { role: 'user', content: [{ type: 'text', text }] },
+          meta: { origin: { kind: 'user' } },
         },
-      })
-      .catch(() => {});
+        { steerIfActive: true },
+      );
+    } catch {
+    }
   }
 
   private publishSwitch(info: ShadowSwitchInfo, anchorSessionId: string): void {

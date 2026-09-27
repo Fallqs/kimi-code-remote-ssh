@@ -121,7 +121,7 @@ describe('CloudAppender', () => {
     expect(typeof event?.['timestamp']).toBe('number');
   });
 
-  it('derives the global endpoint when the env pins the global region', async () => {
+  it('does not send when the env pins the global region', async () => {
     process.env['KIMI_CODE_OAUTH_HOST'] = 'https://auth.kimi.ai';
     const requests: CapturedRequest[] = [];
     const appender = new CloudAppender(
@@ -137,11 +137,10 @@ describe('CloudAppender', () => {
     appender.track({ event: 'tool.call', context: {}, properties: { name: 'bash' } });
     await appender.flush();
 
-    expect(requests).toHaveLength(1);
-    expect(requests[0]?.url).toBe('https://telemetry-logs.kimi.ai/v1/event');
+    expect(requests).toHaveLength(0);
   });
 
-  it('reads the install marker from the bootstrapped home for the default endpoint', async () => {
+  it('does not send when the install marker is global', async () => {
     writeFileSync(join(homeDir, 'region'), 'global\n');
     const requests: CapturedRequest[] = [];
     const appender = new CloudAppender(
@@ -157,8 +156,7 @@ describe('CloudAppender', () => {
     appender.track({ event: 'tool.call', context: {}, properties: { name: 'bash' } });
     await appender.flush();
 
-    expect(requests).toHaveLength(1);
-    expect(requests[0]?.url).toBe('https://telemetry-logs.kimi.ai/v1/event');
+    expect(requests).toHaveLength(0);
   });
 
   it('honors the marker opt-out from the bootstrap env bag (no process.env needed)', async () => {
@@ -409,6 +407,29 @@ describe('CloudAppender', () => {
     expect(
       readdirSync(join(homeDir, 'telemetry')).filter((f) => f.startsWith('failed_')),
     ).toHaveLength(0);
+  });
+
+  it('drops null values from the outbound payload', async () => {
+    const requests: CapturedRequest[] = [];
+    const appender = new CloudAppender(
+      baseOptions({
+        homeDir,
+        deviceId: 'dev123',
+        fetchImpl: makeFetch((req) => {
+          requests.push(req);
+          return okResponse();
+        }),
+      }),
+    );
+
+    appender.track({ event: 'evt', context: {}, properties: { empty: null, keep: 'yes' } });
+    await appender.flush();
+
+    expect(requests).toHaveLength(1);
+    const event = requests[0]?.body.events[0];
+    expect(event?.['property_keep']).toBe('yes');
+    expect(event).not.toHaveProperty('property_empty');
+    expect(event).not.toHaveProperty('session_id');
   });
 
   it('drops non-primitive properties and reports the violation', async () => {

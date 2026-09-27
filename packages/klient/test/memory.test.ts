@@ -1,6 +1,7 @@
 import { rm } from 'node:fs/promises';
 
 import { ISessionManager } from '@moonshot-ai/agent-core-v2/app/sessionManager/sessionManager';
+import type { ServiceIdentifier } from '@moonshot-ai/agent-core-v2/_base/di/instantiation';
 import {
   IShadowRegistry,
   ShadowRegistryService,
@@ -78,6 +79,54 @@ describe('memory dispatcher specifics', () => {
     app.dispose();
     await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
   });
+
+  it('does not respond to interactions owned by another session', async () => {
+    const { homeDir, app } = await makeEngine();
+    const klient = createKlient({ scope: app });
+    const dispatcher = createMemoryDispatcher(app);
+    const first = await klient.global.sessions.create({ workDir: process.cwd() });
+    const second = await klient.global.sessions.create({ workDir: process.cwd() });
+    try {
+      const parked = (await dispatcher.call({ sessionId: first.id }, 'sessionInteractionService', 'enqueue', [
+        {
+          kind: 'approval',
+          payload: {
+            toolName: 'Bash',
+            action: 'run',
+            display: { kind: 'command', command: 'ls' },
+          },
+        },
+      ])) as { id: string };
+
+      await dispatcher.call({ sessionId: second.id }, 'sessionInteractionService', 'respond', [
+        parked.id,
+        { decision: 'approved' },
+      ]);
+      const pendingAfterCross = (await dispatcher.call(
+        { sessionId: first.id },
+        'sessionInteractionService',
+        'listPending',
+        ['approval'],
+      )) as readonly { id: string }[];
+      expect(pendingAfterCross.map((i) => i.id)).toEqual([parked.id]);
+
+      await dispatcher.call({ sessionId: first.id }, 'sessionInteractionService', 'respond', [
+        parked.id,
+        { decision: 'approved' },
+      ]);
+      const pendingAfterOwn = (await dispatcher.call(
+        { sessionId: first.id },
+        'sessionInteractionService',
+        'listPending',
+        ['approval'],
+      )) as readonly { id: string }[];
+      expect(pendingAfterOwn).toEqual([]);
+    } finally {
+      await klient.close();
+      app.dispose();
+      await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
+    }
+  });
 });
 
 describe('memory dispatcher shadow routing', () => {
@@ -92,17 +141,17 @@ describe('memory dispatcher shadow routing', () => {
     );
     const root: ScopeLike = {
       accessor: {
-        get(token: never): unknown {
-          if (token === IShadowRegistry) return registry;
+        get<T>(token: ServiceIdentifier<T>): T {
+          if (token === IShadowRegistry) return registry as T;
           if (token === ISessionManager) {
             return {
               get: (id: string) => {
                 seen.push(id);
                 return sessions.get(id);
               },
-            };
+            } as T;
           }
-          return undefined;
+          return undefined as T;
         },
       },
     };

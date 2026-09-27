@@ -22,6 +22,8 @@ import {
   KIMI_CODE_NATIVE_STAGING_DIR_NAME,
   KIMI_CODE_PLUGIN_UPDATE_NOTICE_STATE_FILE_NAME,
   KIMI_CODE_RECENT_WORKDIRS_FILE_NAME,
+  KIMI_CODE_RECOMMENDED_EFFORT_STATE_FILE_NAME,
+  KIMI_CODE_SURVEY_STATE_FILE_NAME,
   KIMI_CODE_UPDATE_INSTALL_LOCK_FILE_NAME,
   KIMI_CODE_UPDATE_INSTALL_STATE_FILE_NAME,
   KIMI_CODE_UPDATE_DIR_NAME,
@@ -125,6 +127,14 @@ export function getNativeStagedStateFile(exePath: string): string {
  */
 export function getBannerStateFile(): string {
   return join(getCacheDir(), KIMI_CODE_BANNER_DIR_NAME, KIMI_CODE_BANNER_STATE_FILE_NAME);
+}
+
+export function getSurveyStateFile(): string {
+  return join(getDataDir(), KIMI_CODE_SURVEY_STATE_FILE_NAME);
+}
+
+export function getRecommendedEffortStateFile(): string {
+  return join(getDataDir(), KIMI_CODE_RECOMMENDED_EFFORT_STATE_FILE_NAME);
 }
 
 /**

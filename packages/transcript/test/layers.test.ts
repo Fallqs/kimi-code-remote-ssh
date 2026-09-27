@@ -4,6 +4,7 @@ import { filterOpsForGrade, isAppendOnly, redactSnapshotForGrade } from '#/granu
 import { detachGrades, gradeFor, needsResetOnTransition } from '#/granularity/grade';
 import { paginateTurns } from '#/pagination/paginate';
 import { ViewRegistry } from '#/view/registry';
+import { projectTranscriptUserOrigin } from '#/contract/origin';
 import { groupMessagesIntoSnapshot, type HistoryContentPart } from '#/history/groupTurns';
 import { foldWireRecordFacts, type HistoryWireRecord } from '#/history/foldFacts';
 import {
@@ -11,12 +12,72 @@ import {
   transcriptQuerySchema,
   transcriptResponseSchema,
   transcriptGradeSpecSchema,
+  transcriptUserOriginSchema,
 } from '#/contract/schema';
 import type { TranscriptItem } from '#/model/item';
 import type { AgentTranscriptSnapshot, TranscriptOperation } from '#/ops/operation';
 
 const idLabel = (i: TranscriptItem): string =>
   i.kind === 'turn' ? i.turnId : i.kind === 'marker' ? i.markerId : i.refId;
+
+describe('client metadata in transcript user origins', () => {
+  it('retains user-invoked single skill frame metadata without exposing model-triggered activations as user input', () => {
+    const origin = { kind: 'skill_activation', trigger: 'user-slash', skillName: 'example-skill', skillArgs: 'args', clientMetadata: [{ display_text: 'Save button' }] };
+    expect(transcriptUserOriginSchema.parse(projectTranscriptUserOrigin(origin))).toEqual(origin);
+    expect(projectTranscriptUserOrigin({ ...origin, trigger: 'model-tool' })).toBeUndefined();
+  });
+
+  it('rebuilds a user turn payload without server-local paths', () => {
+    const clientMetadata = [{ display_text: 'Visible prompt' }];
+    const origin = {
+      kind: 'user',
+      clientMetadata,
+      skillActivations: [{ activationId: 'a1', skillName: 'deploy', skillArgs: 'now', skillPath: '/private/deploy/SKILL.md' }],
+      attachments: [{ name: 'notes.pdf', mediaType: 'application/pdf', size: 42, path: '/private/notes.pdf' }],
+    };
+    const snapshot = groupMessagesIntoSnapshot([
+      { role: 'user', content: [{ type: 'text', text: 'rendered skill' }, { type: 'text', text: 'visible prompt' }], toolCalls: [], origin },
+      { role: 'assistant', content: [{ type: 'text', text: 'reply' }], toolCalls: [] },
+    ]);
+    const turn = snapshot.items.find((item) => item.kind === 'turn');
+    expect(turn?.origin).toEqual({ kind: 'user', payload: { kind: 'user', clientMetadata, skillActivations: [{ skillName: 'deploy', skillArgs: 'now' }] } });
+    expect(JSON.stringify(turn)).not.toContain('/private/');
+    expect(JSON.stringify(snapshot.attachments)).not.toContain('/private/');
+  });
+
+  it('keeps opening prompt metadata when rebuilding history turns', () => {
+    const clientMetadata = [{ kimi_code_composer: { version: 1, doc: { type: 'doc' } } }];
+    const origin = { kind: 'user', clientMetadata };
+    const snapshot = groupMessagesIntoSnapshot([
+      { role: 'user', content: [{ type: 'text', text: 'visible prompt' }], toolCalls: [], origin },
+      { role: 'assistant', content: [{ type: 'text', text: 'reply' }], toolCalls: [] },
+    ]);
+    const turn = snapshot.items.find((item) => item.kind === 'turn');
+    expect(turn?.origin).toEqual({ kind: 'user', payload: { kind: 'user', clientMetadata } });
+    expect(turn?.prompt).toBe('visible prompt');
+  });
+
+  it('projects and validates independent document snapshots without losing their nested fields', () => {
+    const clientMetadata = [
+      { kimi_code_composer: { version: 1, doc: { type: 'doc', content: [{ type: 'paragraph' }] }, captureIds: ['capture-a'] } },
+      { kimi_code_composer: { version: 1, captureIds: ['capture-b'] } },
+    ];
+    const projected = projectTranscriptUserOrigin({ kind: 'user', clientMetadata });
+    expect(transcriptUserOriginSchema.parse(projected)).toEqual({ kind: 'user', clientMetadata });
+    expect(projectTranscriptUserOrigin({ kind: 'user' })).toStrictEqual({ kind: 'user' });
+    expect(projectTranscriptUserOrigin({ kind: 'injection', clientMetadata })).toBeUndefined();
+  });
+});
+
+describe('user slash skill activations as transcript origins', () => {
+  it('projects a user-invoked activation and rejects a model-triggered one', () => {
+    const origin = { kind: 'skill_activation', trigger: 'user-slash', skillName: 'example-skill', skillArgs: 'args' };
+    expect(transcriptUserOriginSchema.parse(projectTranscriptUserOrigin(origin))).toEqual(origin);
+    expect(projectTranscriptUserOrigin({ ...origin, trigger: 'model-tool' })).toBeUndefined();
+    expect(projectTranscriptUserOrigin({ ...origin, skillName: '' })).toBeUndefined();
+    expect(projectTranscriptUserOrigin({ kind: 'user' })).toStrictEqual({ kind: 'user' });
+  });
+});
 
 const turnOp = (n: number): TranscriptOperation => ({
   op: 'turn.upsert',
@@ -329,13 +390,14 @@ describe('contract schemas', () => {
           kind: 'step', stepId: 't1.1', turnId: 't1', ordinal: 1, state: 'interrupted',
           usage,
           finishReason: 'stop',
-          timing: {
+          llmTiming: {
             llmFirstTokenLatencyMs: 120,
             llmStreamDurationMs: 900,
             llmRequestBuildMs: 5,
             llmServerFirstTokenMs: 110,
             llmServerDecodeMs: 700,
             llmClientConsumeMs: 950,
+            llmClientBlockedMs: 25,
           },
           retry: { failedAttempt: 1, nextAttempt: 2, maxAttempts: 3, delayMs: 500, errorName: 'RateLimit', errorMessage: 'slow down', statusCode: 429 },
           endReason: 'aborted',
@@ -556,6 +618,31 @@ describe('groupMessagesIntoSnapshot (cold path)', () => {
     expect(snapshot.items.map((item) => item.kind)).toEqual(['turn', 'marker']);
   });
 
+  it('carries assistant message usage and timing onto the step', () => {
+    const snapshot = groupMessagesIntoSnapshot([
+      { role: 'user', content: [{ type: 'text', text: 'hello' }], toolCalls: [], origin: { kind: 'user' } },
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'done' }],
+        toolCalls: [],
+        usage: { inputOther: 10, output: 20, inputCacheRead: 30, inputCacheCreation: 40 },
+        llmTiming: { llmFirstTokenLatencyMs: 800, llmStreamDurationMs: 5000 },
+      },
+    ]);
+    const turn = snapshot.items[0];
+    if (turn?.kind !== 'turn') throw new Error('expected turn');
+    expect(turn.steps[0]?.usage).toEqual({
+      inputOther: 10,
+      output: 20,
+      inputCacheRead: 30,
+      inputCacheCreation: 40,
+    });
+    expect(turn.steps[0]?.llmTiming).toEqual({
+      llmFirstTokenLatencyMs: 800,
+      llmStreamDurationMs: 5000,
+    });
+  });
+
   it('folds task-notification user messages into the current turn instead of opening their own', () => {
     const snapshot = groupMessagesIntoSnapshot(
       [
@@ -616,10 +703,10 @@ describe('groupMessagesIntoSnapshot (cold path)', () => {
       [
         { role: 'user', content: [{ type: 'text', text: 'active' }], toolCalls: [], origin: { kind: 'user' } },
         { role: 'assistant', content: [{ type: 'text', text: 'working' }], toolCalls: [] },
-        { role: 'user', content: [{ type: 'text', text: 'steered in' }], toolCalls: [], origin: { kind: 'user' } },
+        { id: 'm-steer', role: 'user', content: [{ type: 'text', text: 'steered in' }], toolCalls: [], origin: { kind: 'user' } },
         { role: 'assistant', content: [{ type: 'text', text: 'noted' }], toolCalls: [] },
       ],
-      { steeredContents: new Map([[JSON.stringify([{ type: 'text', text: 'steered in' }]), new Map([['user', 1]])]]) },
+      { steeredByMessageId: new Map([['m-steer', ['p2']]]) },
     );
 
     expect(snapshot.items.map((i) => i.kind)).toEqual(['turn']);
@@ -630,6 +717,7 @@ describe('groupMessagesIntoSnapshot (cold path)', () => {
       kind: 'text',
       role: 'user',
       text: 'steered in',
+      promptIds: ['p2'],
     });
   });
 
@@ -744,6 +832,32 @@ describe('groupMessagesIntoSnapshot (cold path)', () => {
     if (turn?.kind !== 'turn') throw new Error('expected turn');
     const frame = turn.steps.flatMap((step) => step.frames).find((f) => f.kind === 'text' && f.role === 'user');
     expect(frame).toMatchObject({ text: 'Background agent completed\ninspect done.' });
+  });
+
+  it('stops folded notification text before an inline answer block', () => {
+    const xml = [
+      '<notification id="task:question-1:completed" category="task" type="task.completed" source_kind="background_task" source_id="question-1">',
+      'Title: Background question answered',
+      'Severity: info',
+      'The user answered "Which database?".',
+      '<answer>',
+      '{"answers":{"Which database?":"Postgres"}}',
+      '</answer>',
+      '</notification>',
+    ].join('\n');
+    const snapshot = groupMessagesIntoSnapshot(
+      [
+        { role: 'user', content: [{ type: 'text', text: 'run' }], toolCalls: [], origin: { kind: 'user' } },
+        { role: 'assistant', content: [{ type: 'text', text: 'go' }], toolCalls: [] },
+        { role: 'user', content: [{ type: 'text', text: xml }], toolCalls: [], origin: { kind: 'task', taskId: 'question-1' } as { kind: string } },
+        { role: 'assistant', content: [{ type: 'text', text: 'done' }], toolCalls: [] },
+      ],
+      { taskOriginTurnTaskIds: new Set() },
+    );
+    const turn = snapshot.items[0];
+    if (turn?.kind !== 'turn') throw new Error('expected turn');
+    const frame = turn.steps.flatMap((step) => step.frames).find((f) => f.kind === 'text' && f.role === 'user');
+    expect(frame).toMatchObject({ text: 'Background question answered\nThe user answered "Which database?".' });
   });
 
   it('buffers a folded notification that arrives before the first step into that step', () => {
@@ -915,8 +1029,9 @@ describe('groupMessagesIntoSnapshot (cold path)', () => {
         role: 'user',
         content: [
           { type: 'text', text: 'what is this? [Image #1]' },
-          { type: 'image', source: { kind: 'base64', media_type: 'image/png', data: 'aGVsbG8=' } },
-          { type: 'image', source: { kind: 'url', url: 'https://example.com/pic.png' } },
+          { type: 'image', source: { kind: 'base64', media_type: 'image/png', data: 'aGVsbG8=' }, name: 'inline.png' },
+          { type: 'image', source: { kind: 'url', url: 'https://example.com/pic.png' }, name: 'remote.png' },
+          { type: 'image', source: { kind: 'file', file_id: 'file_8' }, name: 'stored.png' },
           { type: 'file', file_id: 'file_9', name: 'notes.txt', media_type: 'text/plain', size: 128 },
         ],
         toolCalls: [],
@@ -925,25 +1040,32 @@ describe('groupMessagesIntoSnapshot (cold path)', () => {
       { role: 'assistant', content: [{ type: 'text', text: 'a screenshot' }], toolCalls: [] },
     ]);
 
-    expect(snapshot.attachments).toHaveLength(3);
+    expect(snapshot.attachments).toHaveLength(4);
     expect(snapshot.attachments[0]).toMatchObject({
       attachmentId: 'att_1',
       mediaType: 'image/png',
+      name: 'inline.png',
       source: undefined,
     });
     expect(snapshot.attachments[1]).toMatchObject({
       attachmentId: 'att_2',
+      name: 'remote.png',
       source: { kind: 'url', url: 'https://example.com/pic.png' },
     });
     expect(snapshot.attachments[2]).toMatchObject({
       attachmentId: 'att_3',
+      name: 'stored.png',
+      source: { kind: 'file', fileId: 'file_8' },
+    });
+    expect(snapshot.attachments[3]).toMatchObject({
+      attachmentId: 'att_4',
       mediaType: 'text/plain',
       name: 'notes.txt',
       source: { kind: 'file', fileId: 'file_9' },
     });
     const firstTurn = snapshot.items[0];
     if (firstTurn?.kind !== 'turn') throw new Error('expected turn');
-    expect(firstTurn.attachmentIds).toEqual(['att_1', 'att_2', 'att_3']);
+    expect(firstTurn.attachmentIds).toEqual(['att_1', 'att_2', 'att_3', 'att_4']);
   });
 
   it('folds origin file attachments on the opening user message into path-sourced entities', () => {
@@ -1024,7 +1146,7 @@ describe('groupMessagesIntoSnapshot (cold path)', () => {
         content: [
           {
             type: 'video_url',
-            videoUrl: { url: 'kimi-file://file_1' },
+            videoUrl: { url: 'kimi-file://file_1', name: 'clip.mp4' },
           } as HistoryContentPart,
         ],
         toolCalls: [],
@@ -1036,7 +1158,7 @@ describe('groupMessagesIntoSnapshot (cold path)', () => {
           { type: 'text', text: 'what is this?' },
           {
             type: 'image_url',
-            imageUrl: { url: 'kimi-file://file_2?path=%2Fcache%2Fshot.png' },
+            imageUrl: { url: 'kimi-file://file_2?path=%2Fcache%2Fshot.png', name: 'shot.png' },
           } as HistoryContentPart,
         ],
         toolCalls: [],
@@ -1048,11 +1170,13 @@ describe('groupMessagesIntoSnapshot (cold path)', () => {
       {
         attachmentId: 'att_1',
         mediaType: 'video/*',
+        name: 'clip.mp4',
         source: { kind: 'session_media', fileId: 'file_1' },
       },
       {
         attachmentId: 'att_2',
         mediaType: 'image/*',
+        name: 'shot.png',
         source: { kind: 'session_media', fileId: 'file_2' },
       },
     ]);
@@ -1476,6 +1600,75 @@ describe('foldWireRecordFacts (cold facts)', () => {
         origin: { kind: 'compaction_summary' },
       },
     ]);
+
+  it('folds terminal subagent outcomes, background promotion, and a reused member generation', () => {
+    const spawned = (subagentId: string, time: number): HistoryWireRecord => ({
+      type: 'subagent.spawned', subagentId, subagentName: 'explore', parentAgentId: 'main',
+      parentToolCallId: 'swarm', runInBackground: false, time,
+    });
+    const folded = foldWireRecordFacts([
+      spawned('failed', 1000),
+      { type: 'subagent.failed', subagentId: 'failed', error: 'offline', time: 2000 },
+      spawned('cancelled', 1000),
+      { type: 'subagent.cancelled', subagentId: 'cancelled', time: 2000 },
+      spawned('reused', 1000),
+      { type: 'subagent.completed', subagentId: 'reused', resultSummary: 'old', time: 2000 },
+      spawned('reused', 3000),
+      { ...spawned('background', 1000), taskId: 'task-1', runInBackground: true },
+      { type: 'subagent.completed', subagentId: 'background', resultSummary: 'done', usage: { inputOther: 5, output: 7, inputCacheRead: 1, inputCacheCreation: 2 }, time: 2000 },
+      { type: 'task.terminated', info: { taskId: 'task-1', kind: 'agent', status: 'completed', agentId: 'background', detached: true, startedAt: 1000, endedAt: 2000 } },
+      { ...spawned('foreign', 1000), parentAgentId: 'other' },
+    ], baseWithMarker(), { agentId: 'main' });
+    expect(folded.tasks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ taskId: 'failed', state: 'failed', error: 'offline' }),
+      expect.objectContaining({ taskId: 'cancelled', state: 'killed' }),
+      expect.objectContaining({ taskId: 'reused', state: 'running', startedAt: new Date(3000).toISOString() }),
+      expect.objectContaining({ taskId: 'task-1', state: 'completed', resultSummary: 'done', detached: true, usage: { inputOther: 5, output: 7, inputCacheRead: 1, inputCacheCreation: 2 } }),
+    ]));
+    expect(folded.tasks).toHaveLength(4);
+    expect(folded.tasks.find((task) => task.taskId === 'reused')?.resultSummary).toBeUndefined();
+    expect(folded.tasks.find((task) => task.taskId === 'failed')?.usage).toBeUndefined();
+  });
+
+  it('adopts the spawn placeholder into the task registered afterwards', () => {
+    const folded = foldWireRecordFacts([
+      { type: 'subagent.spawned', subagentId: 'child', subagentName: 'explore', parentAgentId: 'main', parentToolCallId: 'tower', runInBackground: false, description: 'review the diff', model: 'k2', time: 1000 },
+      { type: 'task.started', info: { taskId: 'task-9', kind: 'agent', status: 'running', agentId: 'child', detached: false, startedAt: 1100 }, time: 1100 },
+      { type: 'subagent.completed', subagentId: 'child', resultSummary: 'done', usage: { inputOther: 3, output: 4, inputCacheRead: 0, inputCacheCreation: 0 }, time: 2000 },
+    ], baseWithMarker(), { agentId: 'main' });
+    expect(folded.tasks).toEqual([
+      expect.objectContaining({
+        taskId: 'task-9', agentId: 'child', state: 'completed', resultSummary: 'done',
+        description: 'review the diff', model: 'k2',
+        startedAt: new Date(1000).toISOString(),
+        usage: { inputOther: 3, output: 4, inputCacheRead: 0, inputCacheCreation: 0 },
+      }),
+    ]);
+  });
+
+  it('terminalises a background member spawned before its task was registered', () => {
+    const folded = foldWireRecordFacts([
+      { type: 'subagent.spawned', subagentId: 'worker', subagentName: 'tower-worker', parentAgentId: 'main', parentToolCallId: 'tower-spawn', runInBackground: true, description: 'build the feature', time: 1000 },
+      { type: 'task.started', info: { taskId: 'task-7', kind: 'agent', status: 'running', agentId: 'worker', detached: true, startedAt: 1100 }, time: 1100 },
+      { type: 'task.terminated', info: { taskId: 'task-7', kind: 'agent', status: 'lost', agentId: 'worker', detached: true, startedAt: 1100, endedAt: 3000 }, time: 3000 },
+    ], baseWithMarker(), { agentId: 'main' });
+    expect(folded.tasks).toEqual([
+      expect.objectContaining({ taskId: 'task-7', agentId: 'worker', state: 'lost', detached: true, description: 'build the feature' }),
+    ]);
+  });
+
+  it('keeps a terminal subagent record in sync with a placeholder left by an earlier generation', () => {
+    const folded = foldWireRecordFacts([
+      { type: 'subagent.spawned', subagentId: 'worker', subagentName: 'explore', parentAgentId: 'main', parentToolCallId: 'agent-a', runInBackground: false, time: 1000 },
+      { type: 'subagent.spawned', subagentId: 'worker', subagentName: 'explore', parentAgentId: 'main', parentToolCallId: 'agent-b', runInBackground: false, taskId: 'task-7', time: 2000 },
+      { type: 'subagent.failed', subagentId: 'worker', error: 'offline', time: 3000 },
+    ], baseWithMarker(), { agentId: 'main' });
+    expect(folded.tasks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ taskId: 'task-7', state: 'failed', error: 'offline' }),
+      expect.objectContaining({ taskId: 'worker', state: 'failed', error: 'offline' }),
+    ]));
+    expect(folded.tasks).toHaveLength(2);
+  });
 
   it('returns the base snapshot unchanged when no fact records exist (old sessions)', () => {
     const base = baseWithMarker();
@@ -2161,11 +2354,12 @@ describe('foldWireRecordFacts (cold facts)', () => {
     ]);
     const folded = foldWireRecordFacts(
       [
-        { type: 'turn.prompt', input: [{ type: 'text', text: 'run' }], origin: { kind: 'user' }, promptId: 'prompt-live', time: 1 },
-        { type: 'turn.ended', turnId: 0, reason: 'failed', error: { message: 'later failure' }, time: 2 },
+        { type: 'turn.prompt', turnId: 2, input: [{ type: 'text', text: 'run' }], origin: { kind: 'user' }, promptId: 'prompt-live', time: 1 },
+        { type: 'turn.ended', turnId: 2, reason: 'failed', error: { message: 'later failure' }, time: 2 },
       ],
       base,
     );
+    expect(folded.items).toHaveLength(2);
     const blocked = folded.items[0];
     const live = folded.items[1];
     if (blocked?.kind !== 'turn' || live?.kind !== 'turn') throw new Error('expected turns');

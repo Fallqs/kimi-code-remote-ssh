@@ -4,10 +4,12 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { WebSocket, type RawData } from 'ws';
 import {
   IAgentLifecycleService,
+  IConfigService,
+  closeSessionById,
   MAIN_AGENT_ID,
   getLiveSessionById,
   resumeSessionById,
@@ -242,21 +244,28 @@ describe('transcript contract e2e', () => {
   let llm: MockLlm | undefined;
   let base: string;
 
+  beforeAll(async () => {
+    home = await mkdtemp(join(tmpdir(), 'kimi-transcript-contract-'));
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+  });
+
   afterEach(async () => {
     await llm?.close();
+    llm = undefined;
+  });
+
+  afterAll(async () => {
     await server?.close();
+    server = undefined;
     if (home !== undefined) await rm(home, { recursive: true, force: true });
     home = undefined;
-    server = undefined;
-    llm = undefined;
   });
 
   async function boot(routes: readonly LlmRoute[]): Promise<void> {
     llm = await startMockLlm(routes);
-    home = await mkdtemp(join(tmpdir(), 'kimi-transcript-contract-'));
-    await writeFile(join(home, 'config.toml'), configToml(llm.port), 'utf-8');
-    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
-    base = `http://127.0.0.1:${server.port}`;
+    await writeFile(join(home!, 'config.toml'), configToml(llm.port), 'utf-8');
+    await server!.core.accessor.get(IConfigService).reload();
   }
 
   const idle = (server: RunningServer, base: string, sid: string) =>
@@ -350,13 +359,64 @@ describe('transcript contract e2e', () => {
       return tx.prompts.some((p) => p.status === 'queued') && tx.prompts.some((p) => p.status === 'running');
     });
     const mid = await getTranscript(server!, base, sid);
-    expect(mid.prompts.map((p) => p.status).sort()).toEqual(['queued', 'running']);
+    expect(mid.prompts.map((p) => p.status).toSorted()).toEqual(['queued', 'running']);
 
     await until('both settled', async () => {
       const tx = await getTranscript(server!, base, sid);
       return tx.prompts.length > 0 && tx.prompts.every((p) => p.status === 'completed');
     }, 45000);
   });
+
+  it('undo rebuilds a steered turn consistently over REST and WebSocket', async () => {
+    await boot([
+      { match: (body) => body.includes('steered request'), respond: () => sseText('answer after steer') },
+      { match: (body) => body.includes('original request'), respond: () => sseText('answer before steer'), delayMs: 1500 },
+    ]);
+    const sid = await createSession(server!, base);
+    await submitPrompt(server!, base, sid, 'original request');
+    await until('original request reaches model', () => llm!.hits.length > 0);
+    const channel = await subscribeTranscript(server!, sid);
+    try {
+      const steer = await submitPrompt(server!, base, sid, 'steered request');
+      await rest(server!, base, `/api/v1/sessions/${sid}/prompts/${steer.prompt_id}:steer`, { method: 'POST', body: {} });
+      await idle(server!, base, sid);
+      const before = await getTranscript(server!, base, sid);
+      expect(JSON.stringify(before.items)).toContain('answer after steer');
+      expect(before.items.filter((item) => item.kind === 'turn')).toHaveLength(1);
+      expect(before.prompts.some((prompt) => prompt.promptId === steer.prompt_id)).toBe(true);
+      await rest(server!, base, `/api/v1/sessions/${sid}:undo`, { method: 'POST', body: { count: 1 } });
+      const after = await getTranscript(server!, base, sid);
+      expect(after.items.filter((item) => item.kind === 'turn')).toEqual([]);
+      expect(JSON.stringify(after.items)).not.toContain('original request');
+      expect(JSON.stringify(after.items)).not.toContain('answer before steer');
+      expect(JSON.stringify(after.items)).not.toContain('steered request');
+      expect(JSON.stringify(after.items)).not.toContain('answer after steer');
+      expect(after.prompts).toEqual([]);
+      await until('undo reset reaches subscriber', () => channel.ops.some((op) => op.op === 'reset'));
+      expect(channel.ops.find((op) => op.op === 'reset').snapshot.items).toEqual(after.items);
+      const reconnected = await subscribeTranscript(server!, sid);
+      try {
+        expect((await getTranscript(server!, base, sid)).items).toEqual(after.items);
+        expect(reconnected.reset().snapshot.prompts).toEqual([]);
+      } finally {
+        reconnected.close();
+      }
+      await submitPrompt(server!, base, sid, 'steered request');
+      await idle(server!, base, sid);
+      const resent = await getTranscript(server!, base, sid);
+      expect(resent.items.filter((item) => item.kind === 'turn').map((turn) => turn.prompt)).toEqual(['steered request']);
+      expect(resent.prompts.some((prompt) => prompt.promptId === steer.prompt_id)).toBe(false);
+      await closeSessionById(server!.core.accessor, sid);
+      const reopened = await getTranscript(server!, base, sid);
+      expect(reopened.items.filter((item) => item.kind === 'turn').map((turn) => turn.prompt)).toEqual(['steered request']);
+      await rest(server!, base, `/api/v1/sessions/${sid}:undo`, { method: 'POST', body: { count: 1 } });
+      const empty = await getTranscript(server!, base, sid);
+      expect(empty.items.filter((item) => item.kind === 'turn')).toEqual([]);
+      expect(empty.prompts).toEqual([]);
+    } finally {
+      channel.close();
+    }
+  }, 30000);
 
   it('S3: a pending approval appears as an interaction with tool linkage, then resolves', async () => {
     await boot([
@@ -479,17 +539,17 @@ describe('transcript contract e2e', () => {
     expect(reset.meta).toEqual(snapshot.meta);
     const byId = (xs: any[], key: string): Record<string, unknown> =>
       Object.fromEntries(xs.map((x) => [x[key], x]));
-    expect(Object.keys(byId(reset.tasks ?? [], 'taskId')).sort()).toEqual(
-      Object.keys(byId(snapshot.tasks, 'taskId')).sort(),
+    expect(Object.keys(byId(reset.tasks ?? [], 'taskId')).toSorted()).toEqual(
+      Object.keys(byId(snapshot.tasks, 'taskId')).toSorted(),
     );
-    expect(Object.keys(byId(reset.interactions ?? [], 'interactionId')).sort()).toEqual(
-      Object.keys(byId(snapshot.interactions, 'interactionId')).sort(),
+    expect(Object.keys(byId(reset.interactions ?? [], 'interactionId')).toSorted()).toEqual(
+      Object.keys(byId(snapshot.interactions, 'interactionId')).toSorted(),
     );
-    expect(Object.keys(byId(reset.prompts ?? [], 'promptId')).sort()).toEqual(
-      Object.keys(byId(snapshot.prompts, 'promptId')).sort(),
+    expect(Object.keys(byId(reset.prompts ?? [], 'promptId')).toSorted()).toEqual(
+      Object.keys(byId(snapshot.prompts, 'promptId')).toSorted(),
     );
-    expect(Object.keys(byId(reset.todos ?? [], 'todoId')).sort()).toEqual(
-      Object.keys(byId(snapshot.todos, 'todoId')).sort(),
+    expect(Object.keys(byId(reset.todos ?? [], 'todoId')).toSorted()).toEqual(
+      Object.keys(byId(snapshot.todos, 'todoId')).toSorted(),
     );
     channel.close();
   });

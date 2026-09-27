@@ -1,5 +1,6 @@
+import { rm } from 'node:fs/promises';
+
 import type {
-  AgentActivityState,
   ApprovalResponse,
   Event2,
   IAgentScopeHandle,
@@ -13,16 +14,18 @@ import type {
 } from '@moonshot-ai/agent-core-v2';
 import {
   IAgentLifecycleService,
+  IAgentLoopService,
   IEventBus,
   IEventService,
+  INTERACTION_TAG_SESSION_ID,
   ISessionActivityView,
   ISessionIndex,
+  ISessionManager,
   MAIN_AGENT_ID,
   SESSION_SHADOW_SWITCHED_EVENT,
   getLiveSessionById,
-  listSessionPendingInteractions,
-  onSessionInteractionDidChangePending,
-  onSessionInteractionDidResolve,
+  interactions,
+  toDisposable,
 } from '@moonshot-ai/agent-core-v2';
 import { tryShadowAlias } from '../../../shadowAlias';
 import type {
@@ -56,11 +59,16 @@ import {
   type TranscriptStore,
 } from '@moonshot-ai/transcript';
 
-import { toWireApproval } from '../../../routes/approvals';
+import { interactionAgentId, toWireApproval } from '../../../routes/approvals';
 import { toWireQuestion } from '../../../protocol/question-wire';
 import { toWireWorkspace } from '../../../routes/workspaces';
 import { projectPromptContentParts } from '../../../services/messages/messageProjection';
-import { readLegacyStatus, toLegacyPhase } from '../../../services/legacyStatus/legacyStatus';
+import { readLegacyStatus } from '../../../services/legacyStatus/legacyStatus';
+import {
+  legacyApprovalsOf,
+  LegacyActivityTracker,
+  phaseFromDomainEvent,
+} from '../../../services/legacyStatus/legacyActivity';
 import type { TranscriptService } from '../../../services/transcript/transcriptService';
 import { InFlightTurnTracker } from './inFlightTurnTracker';
 import { SubagentRosterTracker } from './subagentRosterTracker';
@@ -143,8 +151,10 @@ export class SessionEventBroadcaster {
   private readonly globalTargets = new Set<BroadcastTarget>();
   private readonly diEventTargets = new Set<BroadcastTarget>();
   private readonly stateBarriers = new Map<string, Promise<void>>();
+  private readonly activityTrackers = new Map<string, LegacyActivityTracker>();
   private readonly maxBufferSize: number;
   private readonly coreEventSubscription: IDisposable;
+  private readonly deletionSubscription: IDisposable | undefined;
   private closed = false;
 
   constructor(
@@ -157,6 +167,11 @@ export class SessionEventBroadcaster {
     },
   ) {
     this.maxBufferSize = opts.maxBufferSize ?? DEFAULT_MAX_BUFFER_SIZE;
+    this.deletionSubscription = opts.core.accessor.get(ISessionManager).onWillDeleteSession?.(
+      (event) => {
+        event.waitUntil(this.purgeSession(event.sessionId));
+      },
+    );
     this.coreEventSubscription = opts.core.accessor
       .get(IEventService)
       .subscribe((event) => this.onCoreEvent(event));
@@ -515,8 +530,11 @@ export class SessionEventBroadcaster {
     if (this.closed) return;
     this.closed = true;
     this.coreEventSubscription.dispose();
+    this.deletionSubscription?.dispose();
+    await Promise.all([...this.stateBarriers.values()].map((barrier) => barrier.catch(() => undefined)));
     for (const [sessionId, state] of this.sessions) {
       await disposeSessionState(state);
+      this.dropActivityTrackers(sessionId);
       this.opts.transcriptService?.dropSession(sessionId);
     }
     this.sessions.clear();
@@ -542,6 +560,26 @@ export class SessionEventBroadcaster {
     return this.runExclusive(head, () => this.runExclusiveAcross(rest, task));
   }
 
+  private dropActivityTrackers(sessionId: string): void {
+    for (const key of this.activityTrackers.keys()) {
+      if (key.startsWith(`${sessionId}:`)) this.activityTrackers.delete(key);
+    }
+  }
+
+  private purgeSession(sessionId: string): Promise<void> {
+    return this.runExclusive(sessionId, async () => {
+      const state = this.sessions.get(sessionId);
+      if (state !== undefined) {
+        this.sessions.delete(sessionId);
+        state.targets.clear();
+        await disposeSessionState(state);
+        this.dropActivityTrackers(sessionId);
+      }
+      this.opts.transcriptService?.dropSession(sessionId);
+      await rm(sessionJournalPath(this.opts.eventsDir, sessionId), { force: true });
+    });
+  }
+
   private ensureState(sessionId: string): Promise<SessionState | undefined> {
     if (this.closed) return Promise.resolve(undefined);
     return this.runExclusive(sessionId, async () => {
@@ -555,8 +593,9 @@ export class SessionEventBroadcaster {
   private async createSessionState(sessionId: string): Promise<SessionState | undefined> {
     if (this.closed) return undefined;
 
-    const engineSessionId =
+    const engineSessionIdOf = (): string =>
       tryShadowAlias(this.opts.core.accessor)?.effectiveId(sessionId) ?? sessionId;
+    const engineSessionId = engineSessionIdOf();
     const session = getLiveSessionById(this.opts.core.accessor, engineSessionId);
     if (session === undefined) return undefined;
 
@@ -564,7 +603,10 @@ export class SessionEventBroadcaster {
       sessionJournalPath(this.opts.eventsDir, sessionId),
       this.opts.logger,
     );
-    if (this.closed) {
+    if (
+      this.closed ||
+      getLiveSessionById(this.opts.core.accessor, engineSessionIdOf()) !== session
+    ) {
       await journal.close();
       return undefined;
     }
@@ -588,17 +630,19 @@ export class SessionEventBroadcaster {
     try {
       this.attachWorkView(session, state);
       this.attachAgents(sessionId, session, state);
-      this.attachInteractions(sessionId, session, state);
+      this.attachInteractions(sessionId, state);
     } catch (error) {
       this.sessions.delete(sessionId);
       await disposeSessionState(state);
+      this.dropActivityTrackers(sessionId);
       if (error instanceof Error && error.message === 'InstantiationService has been disposed') return undefined;
       throw error;
     }
     return state;
   }
 
-  private ensureGlobalState(): Promise<SessionState> {
+  private ensureGlobalState(): Promise<SessionState | undefined> {
+    if (this.closed) return Promise.resolve(undefined);
     const existing = this.sessions.get(GLOBAL_SESSION_ID);
     if (existing !== undefined) return Promise.resolve(existing);
     return this.runExclusive(GLOBAL_SESSION_ID, async () => {
@@ -608,11 +652,15 @@ export class SessionEventBroadcaster {
     });
   }
 
-  private async createGlobalState(): Promise<SessionState> {
+  private async createGlobalState(): Promise<SessionState | undefined> {
     const journal = await SessionEventJournal.open(
       sessionJournalPath(this.opts.eventsDir, GLOBAL_SESSION_ID),
       this.opts.logger,
     );
+    if (this.closed) {
+      await journal.close();
+      return undefined;
+    }
     const state: SessionState = {
       sessionId: GLOBAL_SESSION_ID,
       engineSessionId: GLOBAL_SESSION_ID,
@@ -671,6 +719,19 @@ export class SessionEventBroadcaster {
         sessionId: payload.sessionId,
       } as Event).catch((error: unknown) =>
         this.logDispatchError(GLOBAL_SESSION_ID, 'event.session.archived', error),
+      );
+      return;
+    }
+    if (event.type === 'event.session.deleted') {
+      const payload = sessionDeletedPayload(corePayload);
+      if (payload === undefined) return;
+      void this.dispatchGlobal({
+        type: 'event.session.deleted',
+        workspace_id: payload.workspaceId,
+        agentId: 'main',
+        sessionId: payload.sessionId,
+      } as Event).catch((error: unknown) =>
+        this.logDispatchError(GLOBAL_SESSION_ID, 'event.session.deleted', error),
       );
       return;
     }
@@ -841,7 +902,9 @@ export class SessionEventBroadcaster {
     });
   }
 
-  private async dispatchGlobal(event: Event): Promise<void> {    const state = await this.ensureGlobalState();
+  private async dispatchGlobal(event: Event): Promise<void> {
+    const state = await this.ensureGlobalState();
+    if (state === undefined) return;
     state.queue = state.queue
       .then(() => this.dispatch(state, event, isVolatileEventType(event.type)))
       .catch((error: unknown) => this.logDispatchDropped(state.sessionId, event.type, error));
@@ -915,6 +978,7 @@ export class SessionEventBroadcaster {
         if (d !== undefined) {
           d.dispose();
           state.agentDisposables.delete(agentId);
+          this.activityTrackers.delete(`${sessionId}:${agentId}`);
           this.enqueueDurable(state, {
             type: 'agent.disposed',
             agentId,
@@ -927,6 +991,13 @@ export class SessionEventBroadcaster {
 
   private attachAgent(sessionId: string, handle: IAgentScopeHandle): IDisposable {
     const eventBus = handle.accessor.get(IEventBus);
+    this.activityTrackers.set(
+      `${sessionId}:${handle.id}`,
+      new LegacyActivityTracker(
+        () => handle.accessor.get(IAgentLoopService).snapshot(),
+        () => legacyApprovalsOf(handle),
+      ),
+    );
     let lastLegacyStatus: string | undefined;
     const emitLegacyStatus = (): void => {
       const snapshot = readLegacyStatus(handle);
@@ -963,24 +1034,6 @@ export class SessionEventBroadcaster {
     const state = this.sessions.get(sessionId);
     if (state === undefined) return;
 
-    if (event.type === 'prompt.accepted') return;
-
-    if (event.type === 'agent.activity.updated') {
-      const snapshot = event as unknown as AgentActivityState;
-      const phase = toLegacyPhase(snapshot);
-      if (phase !== undefined) {
-        const wireEvent = {
-          type: 'agent.status.updated',
-          phase,
-          agentId,
-          sessionId,
-        } as unknown as Event;
-        state.queue = state.queue
-          .then(() => this.dispatch(state, wireEvent, true))
-          .catch((error: unknown) => this.logDispatchDropped(state.sessionId, wireEvent.type, error));
-      }
-      return;
-    }
     if (
       event.type === 'agent.status.updated' &&
       (event as { phase?: unknown }).phase !== undefined
@@ -1014,40 +1067,62 @@ export class SessionEventBroadcaster {
         .then(() => this.dispatch(state, legacy, volatile))
         .catch((error: unknown) => this.logDispatchDropped(state.sessionId, legacy.type, error));
     }
+    const tracker = this.activityTrackers.get(`${sessionId}:${agentId}`);
+    if (tracker !== undefined) {
+      const phase = phaseFromDomainEvent(tracker, event);
+      if (phase !== undefined) {
+        const phaseEvent = {
+          type: 'agent.status.updated',
+          phase,
+          agentId,
+          sessionId,
+        } as unknown as Event;
+        state.queue = state.queue
+          .then(() => this.dispatch(state, phaseEvent, true))
+          .catch((error: unknown) => this.logDispatchDropped(state.sessionId, phaseEvent.type, error));
+      }
+    }
   }
 
   private attachInteractions(
     sessionId: string,
-    session: ISessionScopeHandle,
     state: SessionState,
   ): void {
-    const agents = session.accessor.get(IAgentLifecycleService);
-    for (const i of listSessionPendingInteractions(agents)) {
-      state.knownInteractions.set(i.id, { kind: i.kind, agentId: i.origin.agentId ?? 'main' });
+    const pendingOfSession = (): readonly Interaction[] =>
+      interactions.findAll({
+        resolved: false,
+        tags: { [INTERACTION_TAG_SESSION_ID]: sessionId },
+      });
+    for (const i of pendingOfSession()) {
+      state.knownInteractions.set(i.id, { kind: i.kind, agentId: interactionAgentId(i) });
     }
     state.lifecycleDisposables.push(
-      onSessionInteractionDidChangePending(agents, () => {
-        for (const i of listSessionPendingInteractions(agents)) {
-          if (state.knownInteractions.has(i.id)) continue;
-          state.knownInteractions.set(i.id, {
-            kind: i.kind,
-            agentId: i.origin.agentId ?? 'main',
-          });
-          const event = interactionRequestedEvent(i, sessionId);
+      toDisposable(
+        interactions.onDidChangePending(() => {
+          for (const i of pendingOfSession()) {
+            if (state.knownInteractions.has(i.id)) continue;
+            state.knownInteractions.set(i.id, {
+              kind: i.kind,
+              agentId: interactionAgentId(i),
+            });
+            const event = interactionRequestedEvent(i, sessionId);
+            if (event !== undefined) {
+              this.enqueueDurable(state, event);
+            }
+          }
+        }),
+      ),
+      toDisposable(
+        interactions.onDidResolve(({ id, response }) => {
+          const known = state.knownInteractions.get(id);
+          if (known === undefined) return;
+          state.knownInteractions.delete(id);
+          const event = interactionResolvedEvent(known.kind, id, response, sessionId, known.agentId);
           if (event !== undefined) {
             this.enqueueDurable(state, event);
           }
-        }
-      }),
-      onSessionInteractionDidResolve(agents, ({ id, response }) => {
-        const known = state.knownInteractions.get(id);
-        if (known === undefined) return;
-        state.knownInteractions.delete(id);
-        const event = interactionResolvedEvent(known.kind, id, response, sessionId, known.agentId);
-        if (event !== undefined) {
-          this.enqueueDurable(state, event);
-        }
-      }),
+        }),
+      ),
     );
   }
 
@@ -1207,10 +1282,15 @@ function isAgentLifecycleEvent(type: string): boolean {
   return type === 'agent.created' || type === 'agent.disposed';
 }
 
+function isInteractionEvent(type: string): boolean {
+  return type.startsWith('event.approval.') || type.startsWith('event.question.');
+}
+
 function matchesAgentFilter(envelope: EventEnvelope, filter: AgentFilter): boolean {
   if (filter === undefined) return true;
   if (isGlobalEvent(envelope.type)) return true;
   if (isAgentLifecycleEvent(envelope.type)) return true;
+  if (isInteractionEvent(envelope.type)) return true;
   const payload = envelope.payload;
   const agentId =
     typeof payload === 'object' && payload !== null
@@ -1245,6 +1325,7 @@ const TRANSCRIPT_PROJECTED_EVENT_TYPES: ReadonlySet<string> = new Set([
   'subagent.started',
   'subagent.completed',
   'subagent.failed',
+  'subagent.cancelled',
   'subagent.suspended',
   'compaction.started',
   'compaction.blocked',
@@ -1291,14 +1372,14 @@ function suppressedByTranscript(
 }
 
 function interactionRequestedEvent(interaction: Interaction, sessionId: string): Event | undefined {
-  const agentId = interaction.origin.agentId ?? 'main';
+  const agentId = interactionAgentId(interaction);
   switch (interaction.kind) {
     case 'question':
       return {
         type: 'event.question.requested',
         agentId,
         sessionId,
-        ...toWireQuestion(interaction, sessionId),
+        ...toWireQuestion(interaction, sessionId, agentId),
       } as unknown as Event;
     case 'approval':
       return {
@@ -1428,6 +1509,20 @@ function sessionCreatedPayload(
 }
 
 function sessionArchivedPayload(
+  payload: unknown,
+): { sessionId: string; workspaceId: string } | undefined {
+  if (typeof payload !== 'object' || payload === null) return undefined;
+  const candidate = payload as { sessionId?: unknown; workspaceId?: unknown };
+  if (typeof candidate.sessionId !== 'string' || candidate.sessionId.length === 0) {
+    return undefined;
+  }
+  if (typeof candidate.workspaceId !== 'string' || candidate.workspaceId.length === 0) {
+    return undefined;
+  }
+  return { sessionId: candidate.sessionId, workspaceId: candidate.workspaceId };
+}
+
+function sessionDeletedPayload(
   payload: unknown,
 ): { sessionId: string; workspaceId: string } | undefined {
   if (typeof payload !== 'object' || payload === null) return undefined;
