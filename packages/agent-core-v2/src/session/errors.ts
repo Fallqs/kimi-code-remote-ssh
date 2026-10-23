@@ -12,8 +12,10 @@ export const SessionErrors = {
     SESSION_PLAN_MODE_INVALID: 'session.plan_mode_invalid',
     SESSION_SHADOW_INVALID: 'session.shadow_invalid',
     SESSION_TOWER_MODE_INVALID: 'session.tower_mode_invalid',
+    SESSION_OCCUPIED: 'session.occupied',
+    SESSION_STALE: 'session.stale',
   },
-  retryable: ['session.fork_active_turn'],
+  retryable: ['session.fork_active_turn', 'session.occupied'],
 } as const satisfies ErrorDomain;
 
 registerErrorDomain(SessionErrors);

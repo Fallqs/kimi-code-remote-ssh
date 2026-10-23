@@ -214,7 +214,7 @@ describe('ssh roots through IWorkspaceService.createOrTouch', () => {
     host = createScopedTestHost([
       stubPair(IFileSystemStorageService, fileStorage),
       stubPair(IAtomicDocumentStore, new JsonAtomicDocumentStore(fileStorage)),
-      stubPair(IAppendLogStore, new AppendLogStore(fileStorage)),
+      stubPair(IAppendLogStore, new AppendLogStore(fileStorage, stubLog())),
       stubPair(ILogService, stubLog()),
       stubPair(IBootstrapService, stubBootstrap(homeDir)),
       stubPair(IHostFileSystem, noLocalFs()),

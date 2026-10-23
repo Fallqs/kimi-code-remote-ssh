@@ -51,6 +51,7 @@
 //     agentsMdReminder.cwd                            src/agent/agentsMdReminder/agentsMdReminderService.ts
 //     agentsMdReminder.known                          src/agent/agentsMdReminder/agentsMdReminderService.ts
 //     agentsMdReminder.seeded                         src/agent/agentsMdReminder/agentsMdReminderService.ts
+//     changeNotifier.snapshot                         src/agent/changeNotifier/changeNotifierOps.ts
 //     contextMemory                                   src/agent/contextMemory/contextOps.ts
 //     contextProjector.lastRepairSignature            src/agent/contextProjector/contextProjectorService.ts
 //     externalHooks.stopHookContinuationUsed          src/features/externalHooks/agent/agentExternalHooksService.ts
@@ -67,6 +68,7 @@
 //     llm.requestTrace                                src/agent/llmRequester/llmRequestOps.ts
 //     llmRequester.emittedThinkingEffortWarnings      src/agent/llmRequester/llmRequesterService.ts
 //     llmRequester.lastConfigLogSignature             src/agent/llmRequester/llmRequesterService.ts
+//     llmRequester.lastTurnRequest                    src/agent/llmRequester/llmRequesterService.ts
 //     llmRequester.mediaDegradedTurns                 src/agent/llmRequester/llmRequesterService.ts
 //     llmRequester.mediaStrippedTurns                 src/agent/llmRequester/llmRequesterService.ts
 //     llmRequester.turnConfigs                        src/agent/llmRequester/llmRequesterService.ts
@@ -117,7 +119,6 @@
 //     toolExecutor.toolCallDupTypes                   src/agent/toolExecutor/toolExecutorService.ts
 //     toolSelect.pendingLoaded                        src/agent/toolSelect/toolSelectService.ts
 //     tower                                           src/features/tower/towerOps.ts
-//     tower.base                                      src/features/tower/towerOps.ts
 //     tower.owner                                     src/features/tower/towerOps.ts
 //     turn                                            src/agent/loop/turnOps.ts
 //     userTool                                        src/agent/userTool/userToolOps.ts
@@ -717,6 +718,18 @@ export interface AgentStateSnapshot {
   'agentsMdReminder.cwd': string | undefined;
   'agentsMdReminder.known': Set<string>;
   'agentsMdReminder.seeded': boolean;
+  // src/agent/changeNotifier/changeNotifierOps.ts
+  // replayable · durable · undoable — folds: ContextClear, ContextApplyCompaction, ChangeNotifierSnapshotEvent
+  'changeNotifier.snapshot': /* ChangeNotifierSnapshotState — packages/agent-core-v2/src/agent/changeNotifier/changeNotifierOps.ts */ {
+    readonly agentsMdHash?: string;
+    readonly agentsMdFiles?: Readonly<Record<string, string>>;
+    readonly skillsHash?: string;
+    readonly subagentNames?: readonly string[];
+    readonly modelPool?: /* SubagentModelPoolSnapshot — packages/agent-core-v2/src/agent/changeNotifier/changeNotifier.ts */ {
+      readonly defaultModel?: string;
+      readonly models: Readonly<Record<string, string>>;
+    };
+  };
   // src/agent/contextMemory/contextOps.ts
   // replayable · durable · undoable — folds: ContextAppendMessage, ContextAppendLoopEvent, ContextClear, ContextApplyCompaction
   'contextMemory': (/* ContextMessage — packages/agent-core-v2/src/agent/contextMemory/types.ts */ /* Message — packages/agent-core-v2/src/llm-adapter/contract/message.ts */ {
@@ -725,6 +738,12 @@ export interface AgentStateSnapshot {
     readonly content: (/* ContentPart — packages/agent-core-v2/src/human/llm/message.ts */ /* TextPart — packages/agent-core-v2/src/human/llm/message.ts */ {
       type: 'text';
       text: string;
+      meta?: /* TextPartMeta — packages/agent-core-v2/src/human/llm/message.ts */ {
+        source?: string;
+        contentType?: string;
+        activationId?: string;
+        [key: string]: unknown;
+      };
     } | /* ThinkPart — packages/agent-core-v2/src/human/llm/message.ts */ {
       type: 'think';
       think: string;
@@ -968,6 +987,15 @@ export interface AgentStateSnapshot {
   // src/agent/llmRequester/llmRequesterService.ts
   'llmRequester.emittedThinkingEffortWarnings': Set<string>;
   'llmRequester.lastConfigLogSignature': string | undefined;
+  'llmRequester.lastTurnRequest': /* AgentLLMTurnRequestSnapshot — packages/agent-core-v2/src/agent/llmRequester/llmRequester.ts */ {
+    readonly modelAlias: string;
+    readonly contextRevision: number;
+    readonly toolsHash: string;
+    readonly systemPromptHash: string;
+    readonly inputTokens?: number;
+    readonly startedAt: number;
+    readonly finishedAt: number;
+  } | undefined;
   'llmRequester.mediaDegradedTurns': Set<number>;
   'llmRequester.mediaStrippedTurns': Map<number, /* MediaStripSnapshot — packages/agent-core-v2/src/agent/contextProjector/contextProjector.ts */ {
     readonly "__@mediaStripSnapshotBrand": undefined;
@@ -1035,6 +1063,12 @@ export interface AgentStateSnapshot {
   'media.resolved': Map<string, /* ContentPart — packages/agent-core-v2/src/human/llm/message.ts */ /* TextPart — packages/agent-core-v2/src/human/llm/message.ts */ {
     type: 'text';
     text: string;
+    meta?: /* TextPartMeta — packages/agent-core-v2/src/human/llm/message.ts */ {
+      source?: string;
+      contentType?: string;
+      activationId?: string;
+      [key: string]: unknown;
+    };
   } | /* ThinkPart — packages/agent-core-v2/src/human/llm/message.ts */ {
     type: 'think';
     think: string;
@@ -1297,8 +1331,6 @@ export interface AgentStateSnapshot {
   // src/features/tower/towerOps.ts
   // replayable · durable — folds: TowerModeEnter, TowerModeExit
   'tower': boolean;
-  // replayable · durable — folds: TowerModeEnter, TowerModeExit
-  'tower.base': string | null;
   // replayable · durable — folds: TowerModeEnter, TowerModeExit
   'tower.owner': string | undefined;
 }

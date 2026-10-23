@@ -7,8 +7,14 @@ import {
 } from '#/_base/errors/unexpectedError';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentConversationUndoParticipantRegistry } from '#/agent/contextMemory/conversationUndoParticipants';
+import { IAgentChangeNotifierService } from '#/agent/changeNotifier/changeNotifier';
+import {
+  ChangeNotifierSnapshotEvent,
+  changeNotifierSnapshotKey,
+} from '#/agent/changeNotifier/changeNotifierOps';
 import { ContextApplyCompaction } from '#/agent/contextMemory/contextEvents';
 import { isPromptOwnedInjection, isUndoAnchor } from '#/agent/contextMemory/conversationTime';
+import { userPromptSubmitHookPart } from '#/agent/contextMemory/hookParts';
 import type { ContextMessage, PromptOrigin, TaskOrigin } from '#/agent/contextMemory/types';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { IAgentLoopService } from '#/agent/loop/loop';
@@ -27,6 +33,7 @@ import { ToolsUpdateStore } from '#/features/todo/todoOps';
 import type { TodoItem } from '#/features/todo/todoItem';
 import { IAgentTodoService } from '#/features/todo/todoService';
 import type { DurableAgentRuntimeParticipant } from '#/state/eventDispatcher';
+import { IEventDispatcher } from '#/state/eventDispatcher';
 import { WIRE_PROTOCOL_VERSION } from '#/wire/migration/migration';
 import type { WireRecord } from '#/wire/record';
 import { IWireService } from '#/wire/wire';
@@ -340,6 +347,81 @@ describe('AgentConversationUndoService', () => {
     }
   });
 
+  it('rolls change-notifier beliefs back with the undone turn', async () => {
+    await setup();
+    ctx.get(IAgentChangeNotifierService);
+    const dispatcher = ctx.get(IEventDispatcher);
+    ctx.appendTurnExchange('u1', 'a1');
+    await dispatcher.dispatch(
+      new ChangeNotifierSnapshotEvent({
+        agentId: 'main',
+        agentsMdHash: null,
+        skillsHash: null,
+        subagentNames: ['default'],
+      }),
+    );
+    ctx.appendTurnExchange('u2', 'a2');
+    await dispatcher.dispatch(
+      new ChangeNotifierSnapshotEvent({
+        agentId: 'main',
+        agentsMdHash: null,
+        skillsHash: null,
+        subagentNames: ['default', 'deploy'],
+      }),
+    );
+    expect(ctx.agentState.get(changeNotifierSnapshotKey).subagentNames).toEqual([
+      'default',
+      'deploy',
+    ]);
+
+    await ctx.get(IAgentConversationUndoService).undo(1);
+
+    expect(ctx.agentState.get(changeNotifierSnapshotKey).subagentNames).toEqual(['default']);
+  });
+
+  it('resets change-notifier beliefs on context clear', async () => {
+    await setup();
+    ctx.get(IAgentChangeNotifierService);
+    const dispatcher = ctx.get(IEventDispatcher);
+    ctx.appendTurnExchange('u1', 'a1');
+    await dispatcher.dispatch(
+      new ChangeNotifierSnapshotEvent({
+        agentId: 'main',
+        agentsMdHash: null,
+        skillsHash: null,
+        subagentNames: ['default'],
+      }),
+    );
+    expect(ctx.agentState.get(changeNotifierSnapshotKey).subagentNames).toEqual(['default']);
+
+    ctx.get(IAgentContextMemoryService).clear();
+    await ctx.get(IWireService).flush();
+
+    expect(ctx.agentState.get(changeNotifierSnapshotKey)).toEqual({});
+  });
+
+  it('resets change-notifier beliefs on compaction', async () => {
+    await setup();
+    ctx.get(IAgentChangeNotifierService);
+    const dispatcher = ctx.get(IEventDispatcher);
+    ctx.appendTurnExchange('u1', 'a1');
+    await dispatcher.dispatch(
+      new ChangeNotifierSnapshotEvent({
+        agentId: 'main',
+        agentsMdHash: null,
+        skillsHash: null,
+        subagentNames: ['default'],
+      }),
+    );
+    expect(ctx.agentState.get(changeNotifierSnapshotKey).subagentNames).toEqual(['default']);
+
+    await dispatcher.dispatch(
+      new ContextApplyCompaction({ agentId: 'main', summary: 'summary', compactedCount: 1 }),
+    );
+
+    expect(ctx.agentState.get(changeNotifierSnapshotKey)).toEqual({});
+  });
+
   it('keeps machine and wire turn ids aligned across undo, a continued turn, and a restart', async () => {
     await setup();
     const undo = ctx.get(IAgentConversationUndoService);
@@ -633,6 +715,19 @@ describe('AgentConversationUndoService', () => {
     await ctx.get(IAgentConversationUndoService).undo(1);
     await expect(metadata.read()).resolves.toMatchObject({ lastPrompt: undefined });
 
+    ctx.context.append({
+      role: 'user',
+      content: [
+        userPromptSubmitHookPart('<hook_result hook_event="UserPromptSubmit">\nhook note\n</hook_result>'),
+        { type: 'text', text: 'u2' },
+      ],
+      toolCalls: [],
+      origin: { kind: 'user' },
+    });
+    ctx.appendTurnExchange('u3', 'a3');
+
+    await ctx.get(IAgentConversationUndoService).undo(1);
+    await expect(metadata.read()).resolves.toMatchObject({ lastPrompt: 'u2' });
   });
 
   it.each([undefined, 'Save button · Rename it'])('uses the newest pending prompt as lastPrompt after undo (display=%s)', async (displayText) => {
@@ -650,7 +745,10 @@ describe('AgentConversationUndoService', () => {
         {
           message: {
             role: 'user',
-            content: [{ type: 'text', text: 'queued prompt' }],
+            content: [
+              userPromptSubmitHookPart('<hook_result hook_event="UserPromptSubmit">\nhook note\n</hook_result>'),
+              { type: 'text', text: 'queued prompt' },
+            ],
           },
           meta: {
             promptId: 'queued',
