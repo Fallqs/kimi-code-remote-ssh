@@ -170,6 +170,7 @@ const ModelBaseSchema = z.object({
   maxContextSize: z.number().int().min(1).optional(),
   maxInputSize: z.number().int().min(1).optional(),
   maxOutputSize: z.number().int().min(1).optional(),
+  idcMinutes: z.number().optional(),
   capabilities: z.array(z.string()).optional(),
   displayName: z.string().optional(),
   reasoningKey: z.string().optional(),

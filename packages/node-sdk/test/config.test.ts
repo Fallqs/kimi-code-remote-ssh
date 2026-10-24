@@ -70,6 +70,25 @@ api_key_env = "ACME_API_KEY"
     expect(parseConfigString(text).providers['acme']?.apiKeyEnv).toBe('ACME_API_KEY');
   });
 
+  it('preserves idle auto-compaction settings', () => {
+    const config = parseConfigString(`
+[models.acme]
+provider = "acme"
+model = "acme"
+max_context_size = 131072
+idc_minutes = 25
+
+[loop_control]
+idc_lower_bound = 70000
+`);
+
+    expect(config.models?.['acme']?.idcMinutes).toBe(25);
+    expect(config.loopControl?.idcLowerBound).toBe(70_000);
+    const raw = configToTomlData(config);
+    expect(raw['models']).toMatchObject({ acme: { idc_minutes: 25 } });
+    expect(raw['loop_control']).toMatchObject({ idc_lower_bound: 70_000 });
+  });
+
   it('preserves and removes model upgrade metadata', () => {
     const config = parseConfigString(`
 [models."acme/current"]

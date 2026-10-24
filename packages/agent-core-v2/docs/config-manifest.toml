@@ -231,6 +231,7 @@ extra_skill_dirs = []
 # reserved_context_size: integer
 # compaction_trigger_ratio: number
 # compaction_max_attempts: integer
+# idc_lower_bound: integer
 
 # ##########################################################################
 # mcp
@@ -291,6 +292,7 @@ merge_all_available_skills = true
   # max_context_size: integer
   # max_input_size: integer
   # max_output_size: integer
+  # idc_minutes: number
   # capabilities: string[]
   # display_name: string
   # reasoning_key: string
@@ -307,6 +309,7 @@ merge_all_available_skills = true
     # max_context_size: integer
     # max_input_size: integer
     # max_output_size: integer
+    # idc_minutes: number
     # capabilities: string[]
     # display_name: string
     # reasoning_key: string

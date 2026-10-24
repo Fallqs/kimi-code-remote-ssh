@@ -69,6 +69,7 @@ const ModelAliasBaseSchema = z.object({
   maxContextSize: z.number().int().min(1),
   maxInputSize: z.number().int().min(1).optional(),
   maxOutputSize: z.number().int().min(1).optional(),
+  idcMinutes: z.number().optional(),
   capabilities: z.array(z.string()).optional(),
   displayName: z.string().optional(),
   reasoningKey: z.string().optional(),
@@ -148,6 +149,7 @@ export const LoopControlSchema = z.object({
   reservedContextSize: z.number().int().min(0).optional(),
   compactionTriggerRatio: z.number().min(0.5).max(0.99).optional(),
   compactionMaxAttempts: z.number().int().min(1).optional(),
+  idcLowerBound: z.number().int().min(0).optional(),
 });
 
 export type LoopControl = z.infer<typeof LoopControlSchema>;

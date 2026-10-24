@@ -522,6 +522,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       reservedContextSize: loopControl?.reservedContextSize,
       compactionTriggerRatio: loopControl?.compactionTriggerRatio,
       compactionMaxAttempts: loopControl?.compactionMaxAttempts,
+      idcLowerBound: loopControl?.idcLowerBound,
     };
   }
 

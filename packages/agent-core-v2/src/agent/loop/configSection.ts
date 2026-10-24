@@ -17,6 +17,7 @@ export const LoopControlSchema = z.object({
   reservedContextSize: z.number().int().min(0).optional(),
   compactionTriggerRatio: z.number().min(0.5).max(0.99).optional(),
   compactionMaxAttempts: z.number().int().min(1).optional(),
+  idcLowerBound: z.number().int().min(0).optional(),
 });
 
 export type LoopControl = z.infer<typeof LoopControlSchema>;

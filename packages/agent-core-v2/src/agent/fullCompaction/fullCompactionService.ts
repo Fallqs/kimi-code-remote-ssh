@@ -11,7 +11,10 @@ import { ISessionTokenCountingService } from '#/session/tokenCounting/sessionTok
 import { IAgentLLMRequesterService, type AgentLLMRequestFinish } from '#/agent/llmRequester/llmRequester';
 import type { LLMRequestTrace } from '#/llm-adapter/contract/request-trace';
 import { retryBackoffDelay, sleepForRetry } from '#/_base/utils/retry';
+import { MAX_TIMER_DELAY_MS, TimeoutTimer } from '#/_base/utils/timer';
 import { runWithCredentialRecovery } from '#/llm-adapter/model/credential-recovery';
+import { effectiveModelConfig } from '#/llm-adapter/model/model-auth';
+import { IModelService } from '#/llm-adapter/model/model';
 import { IAgentLoopService, type LoopErrorContext } from '#/agent/loop/loop';
 import { TurnStarted } from '#/agent/loop/turnEvents';
 import { TurnEnded } from '#/agent/loop/turnOps';
@@ -76,6 +79,7 @@ import { OrderedHookSlot } from '#/hooks';
 
 export const MAX_COMPACTION_RETRY_ATTEMPTS = 5;
 const DEFAULT_COMPACTION_MAX_COMPLETION_TOKENS = 128 * 1024;
+const DEFAULT_IDLE_COMPACTION_THRESHOLD_TOKENS = 65_536;
 const OVERFLOW_CONTEXT_SAFETY_RATIO = 0.85;
 const OVERFLOW_STATUS_RECOVERY_RATIO = 0.5;
 const MAX_COMPACTION_OVERFLOW_SHRINK_ATTEMPTS = 3;
@@ -140,6 +144,8 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
   readonly onDidFinishCompaction: Event<FullCompactionTask> = this._onDidFinishCompaction.event;
 
   private readonly strategy: CompactionStrategy;
+  private readonly idleCompactionTimer = this._register(new TimeoutTimer());
+  private lastModelRequestCompletedAt: number | undefined;
   private _compacting: ActiveCompaction | null = null;
 
   constructor(
@@ -158,6 +164,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     @IAgentStateService private readonly states: IAgentStateService,
     @IWireService private readonly wire: IWireService,
     @ISessionRunGate private readonly runGate: ISessionRunGate,
+    @IModelService private readonly models: IModelService,
   ) {
     super();
     this.states.contributeState(fullCompactionKey);
@@ -183,8 +190,11 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     this._register(
       this.eventBus.subscribe(TurnEnded, () => {
         this.activeTurnId = undefined;
+        this.scheduleIdleCompaction();
       }),
     );
+    this._register(this.models.onDidChangeModels(() => this.scheduleIdleCompaction()));
+    this._register(this.models.onDidChangeDefaultModel(() => this.scheduleIdleCompaction()));
     this._register(
       this.loopService.hooks.onWillBeginStep.register('full-compaction', async (ctx, next) => {
         await this.beforeStep(ctx.signal, ctx.turnId);
@@ -509,9 +519,51 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
 
   private async afterStep(): Promise<void> {
     this.consecutiveOverflowCompactions = 0;
+    this.lastModelRequestCompletedAt = this.llmRequester.lastTurnRequest()?.finishedAt ?? Date.now();
     if (this.strategy.checkAfterStep) {
       this.checkAutoCompaction(false);
     }
+    this.scheduleIdleCompaction();
+  }
+
+  private scheduleIdleCompaction(): void {
+    this.idleCompactionTimer.cancel();
+    const completedAt = this.lastModelRequestCompletedAt;
+    if (completedAt === undefined) return;
+    const minutes = this.idcMinutes();
+    if (minutes <= 0) return;
+    const delay = Math.max(0, completedAt + minutes * 60_000 - Date.now());
+    this.idleCompactionTimer.cancelAndSet(
+      () => this.runIdleCompaction(completedAt),
+      Math.min(delay, MAX_TIMER_DELAY_MS),
+    );
+  }
+
+  private runIdleCompaction(completedAt: number): void {
+    if (this.lastModelRequestCompletedAt !== completedAt) return;
+    const minutes = this.idcMinutes();
+    if (minutes <= 0) return;
+    if (Date.now() < completedAt + minutes * 60_000) {
+      this.scheduleIdleCompaction();
+      return;
+    }
+    if (
+      this.activeTurnId !== undefined ||
+      this.loopService.snapshot().state === 'running' ||
+      this._compacting !== null
+    ) return;
+    const lowerBound = this.profile.resolveModelContext().idcLowerBound
+      ?? DEFAULT_IDLE_COMPACTION_THRESHOLD_TOKENS;
+    if (this.tokenCountWithPending() < lowerBound || this.context.get().length === 0) return;
+    this.lastModelRequestCompletedAt = undefined;
+    this.beginAutoCompaction(false);
+  }
+
+  private idcMinutes(): number {
+    const modelAlias = this.profile.data().modelAlias;
+    const model = modelAlias === undefined ? undefined : this.models.get(modelAlias);
+    const configured = model === undefined ? undefined : effectiveModelConfig(model).idcMinutes;
+    return typeof configured === 'number' && Number.isFinite(configured) ? configured : 0;
   }
 
   private checkAutoCompaction(throwOnLimit = true): boolean {

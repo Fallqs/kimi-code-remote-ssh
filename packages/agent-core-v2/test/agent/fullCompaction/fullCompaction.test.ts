@@ -37,6 +37,7 @@ import { renderCompactionInstruction } from '#/agent/fullCompaction/compactionIn
 import { IAgentToolSelectAnnouncementsService } from '#/agent/toolSelect/toolSelectAnnouncements';
 import {
   IAgentFullCompactionService,
+  IModelService,
   IModelOAuthTokens,
   IAgentProfileService,
   ITelemetryService,
@@ -423,6 +424,116 @@ describe('FullCompaction', () => {
     approval.respond({ decision: 'rejected', selectedLabel: 'reject' });
     await ctx.untilTurnEnd();
     expect(ctx.get(IAgentLoopService).snapshot().activeTurnId).toBeUndefined();
+  });
+
+  it('runs idle auto-compaction after the configured model timeout', async () => {
+    vi.useFakeTimers();
+    const ctx = testAgent();
+    ctx.configure({
+      provider: CATALOGUED_PROVIDER,
+      modelCapabilities: { ...CATALOGUED_MODEL_CAPABILITIES, max_context_tokens: 1_000_000 },
+    });
+    await setIdcMinutes(ctx, 25);
+    ctx.appendExchange(1, 'old user', 'old assistant', 65_536);
+    ctx.mockNextResponse({ type: 'text', text: 'Answer.' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Continue.' }] });
+    await ctx.untilTurnEnd();
+    rebaseTokenCount(ctx, 65_536);
+    expect(ctx.get(IAgentLoopService).snapshot().activeTurnId).toBeUndefined();
+    ctx.mockNextResponse({ type: 'text', text: 'Idle compaction summary.' });
+    const completed = ctx.once('compaction.completed');
+
+    await vi.advanceTimersByTimeAsync(25 * 60_000 - 1);
+    expect(ctx.llmCalls).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(ctx.llmCalls).toHaveLength(2);
+    await completed;
+
+    expect(ctx.llmCalls).toHaveLength(2);
+    expect(ctx.compactHistory().some((message) => message.text.includes('Idle compaction summary.'))).toBe(true);
+  });
+
+  it('keeps idle auto-compaction disabled by default and for non-positive timeouts', async () => {
+    vi.useFakeTimers();
+    for (const timeout of [undefined, 0, -1]) {
+      const ctx = testAgent();
+      ctx.configure({
+        provider: CATALOGUED_PROVIDER,
+        modelCapabilities: { ...CATALOGUED_MODEL_CAPABILITIES, max_context_tokens: 1_000_000 },
+      });
+      if (timeout !== undefined) await setIdcMinutes(ctx, timeout);
+      ctx.appendExchange(1, 'old user', 'old assistant', 65_536);
+      ctx.mockNextResponse({ type: 'text', text: 'Answer.' });
+      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Continue.' }] });
+      await ctx.untilTurnEnd();
+      rebaseTokenCount(ctx, 65_536);
+
+      await vi.advanceTimersByTimeAsync(25 * 60_000);
+      expect(ctx.llmCalls).toHaveLength(1);
+    }
+  });
+
+  it('honors the configured idle compaction context threshold', async () => {
+    vi.useFakeTimers();
+    const ctx = testAgent({
+      initialConfig: {
+        providers: {},
+        loopControl: { idcLowerBound: 70_000 },
+      },
+    });
+    ctx.configure({
+      provider: CATALOGUED_PROVIDER,
+      modelCapabilities: { ...CATALOGUED_MODEL_CAPABILITIES, max_context_tokens: 1_000_000 },
+    });
+    await setIdcMinutes(ctx, 1);
+    ctx.appendExchange(1, 'old user', 'old assistant', 65_536);
+    ctx.mockNextResponse({ type: 'text', text: 'Answer.' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Continue.' }] });
+    await ctx.untilTurnEnd();
+    rebaseTokenCount(ctx, 65_536);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(ctx.llmCalls).toHaveLength(1);
+
+    ctx.appendExchange(2, 'more context', 'more assistant context', 5_000);
+    ctx.mockNextResponse({ type: 'text', text: 'Answer with more context.' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Continue again.' }] });
+    await ctx.untilTurnEnd();
+    rebaseTokenCount(ctx, 70_000);
+    ctx.mockNextResponse({ type: 'text', text: 'Threshold summary.' });
+    const completed = ctx.once('compaction.completed');
+    await vi.advanceTimersByTimeAsync(60_000);
+    await completed;
+
+    expect(ctx.llmCalls).toHaveLength(3);
+  });
+
+  it('waits for an active turn to end before idle auto-compaction', async () => {
+    const ctx = testAgent(execEnvServices({ processRunner: createCommandRunner('should-not-run') }));
+    ctx.configure({
+      provider: CATALOGUED_PROVIDER,
+      modelCapabilities: { ...CATALOGUED_MODEL_CAPABILITIES, max_context_tokens: 1_000_000 },
+      tools: ['Bash'],
+    });
+    await setIdcMinutes(ctx, 0.001);
+    ctx.appendExchange(1, 'old user', 'old assistant', 65_536);
+    ctx.mockNextResponse({ type: 'text', text: 'I will wait for approval.' }, bashCall());
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Start the active turn' }] });
+    const approval = await ctx.takeApprovalRequest();
+    rebaseTokenCount(ctx, 65_536);
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(ctx.llmCalls).toHaveLength(1);
+
+    ctx.mockNextResponse({ type: 'text', text: 'Turn done.' });
+    approval.respond({ decision: 'rejected', selectedLabel: 'reject' });
+    await ctx.untilTurnEnd();
+    rebaseTokenCount(ctx, 65_536);
+    ctx.mockNextResponse({ type: 'text', text: 'Delayed idle summary.' });
+    const completed = ctx.once('compaction.completed');
+    await completed;
+
+    expect(ctx.llmCalls).toHaveLength(3);
   });
 
   it('projects the compacted prefix before sending the summary request', async () => {
@@ -3681,6 +3792,23 @@ afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllEnvs();
 });
+
+async function setIdcMinutes(ctx: TestAgentContext, minutes: number): Promise<void> {
+  const models = ctx.get(IModelService);
+  const alias = ctx.get(IAgentProfileService).data().modelAlias;
+  if (alias === undefined) throw new Error('Expected a configured model');
+  const model = models.get(alias);
+  if (model === undefined) throw new Error(`Missing model ${alias}`);
+  await models.set(alias, { ...model, idcMinutes: minutes });
+}
+
+function rebaseTokenCount(ctx: TestAgentContext, tokens: number): void {
+  ctx.get(ISessionTokenCountingService).rebase(ctx.agentContext, {
+    length: ctx.context.get().length,
+    tokens,
+    measured: false,
+  });
+}
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
