@@ -96,6 +96,17 @@ export interface LlmRequest {
   readonly droppedCount?: number;
 }
 
+export interface LlmTurnRequestCompletedPayload {
+  readonly agentId: string;
+  readonly turnId: number;
+}
+
+export class LlmTurnRequestCompleted extends AgentEvent2<LlmTurnRequestCompletedPayload> {
+  static override readonly type = 'llm.turn_request.completed';
+  static override readonly observable = true;
+}
+export interface LlmTurnRequestCompleted extends LlmTurnRequestCompletedPayload {}
+
 export const llmRequestTraceKey = defineState(
   'llm.requestTrace',
   (): LlmRequestTraceState => ({ seenToolsHashes: [] }),

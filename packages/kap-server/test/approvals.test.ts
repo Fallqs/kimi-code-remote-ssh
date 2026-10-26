@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { randomUUID } from 'node:crypto';
 
-import { ensureMainAgent, getLiveSessionById, interactions } from '@moonshot-ai/agent-core-v2';
+import { ensureMainAgent, getLiveSessionById, interactions, IShadowRegistry } from '@moonshot-ai/agent-core-v2';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';
@@ -197,6 +197,33 @@ describe('server-v2 /api/v1/sessions/{sid}/approvals', () => {
   it('returns 40401 for an unknown session', async () => {
     const { body } = await getJson<null>('/api/v1/sessions/nope/approvals?status=pending');
     expect(body.code).toBe(40401);
+  });
+
+  it('lists and resolves approvals raised inside a shadow session', async () => {
+    const sid = await createSession();
+    const shadowSid = await createSession();
+    const registry = server!.core.accessor.get(IShadowRegistry);
+    registry.noteEnter(sid, shadowSid);
+    try {
+      const aid = enqueueApproval(shadowSid, 'tc-shadow');
+
+      const { body } = await getJson<ListWire>(`/api/v1/sessions/${sid}/approvals?status=pending`);
+      expect(body.code).toBe(0);
+      expect(body.data.items).toHaveLength(1);
+      expect(body.data.items[0]!.approval_id).toBe(aid);
+      expect(body.data.items[0]!.session_id).toBe(sid);
+
+      const resolved = await postJson<ResolveWire>(`/api/v1/sessions/${sid}/approvals/${aid}`, {
+        decision: 'approved',
+      });
+      expect(resolved.body.code).toBe(0);
+      expect(resolved.body.data.resolved).toBe(true);
+
+      const listed = await getJson<ListWire>(`/api/v1/sessions/${sid}/approvals?status=pending`);
+      expect(listed.body.data.items).toHaveLength(0);
+    } finally {
+      registry.noteExit(sid);
+    }
   });
 
   it('stamps the requesting agent onto wire approvals, defaulting to main', async () => {

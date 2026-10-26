@@ -2,4 +2,4 @@
 "@moonshot-ai/kimi-code": minor
 ---
 
-Add idle auto-compaction, enabled by setting a model's `idc_minutes` and tuned with `loop_control.idc_lower_bound`.
+Add opt-in idle auto-compaction with main-agent `idc_switch` and `idc_status` tools, using `idc_minutes` and `loop_control.idc_lower_bound` as defaults.

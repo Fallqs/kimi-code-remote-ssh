@@ -134,14 +134,14 @@ async function assembleSnapshot(
     .findAll({
       kind: 'approval',
       resolved: false,
-      tags: { [INTERACTION_TAG_SESSION_ID]: sessionId },
+      tags: { [INTERACTION_TAG_SESSION_ID]: handle.id },
     })
     .map((i) => toWireApproval(i, sessionId));
   const pendingQuestions = interactions
     .findAll({
       kind: 'question',
       resolved: false,
-      tags: { [INTERACTION_TAG_SESSION_ID]: sessionId },
+      tags: { [INTERACTION_TAG_SESSION_ID]: handle.id },
     })
     .map((i) => toWireQuestion(i, sessionId, interactionAgentId(i)));
 

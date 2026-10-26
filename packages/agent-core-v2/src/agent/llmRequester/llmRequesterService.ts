@@ -74,6 +74,7 @@ import {
   LlmRequest,
   llmRequestTraceKey,
   LlmToolsSnapshot,
+  LlmTurnRequestCompleted,
   type LlmRequestPayload,
   type LlmRequestToolSchema,
 } from './llmRequestOps';
@@ -487,7 +488,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
       }
 
       if (request.source?.type === 'turn') {
-        this.states.set(llmRequesterLastTurnRequestKey, {
+        const snapshot: AgentLLMTurnRequestSnapshot = {
           modelAlias: request.modelAlias,
           contextRevision: request.contextRevision,
           toolsHash: recorded.toolsHash,
@@ -495,7 +496,14 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
           inputTokens: usage === undefined ? undefined : inputTotal(usage),
           startedAt,
           finishedAt: Date.now(),
-        });
+        };
+        this.states.set(llmRequesterLastTurnRequestKey, snapshot);
+        void this.dispatcher.dispatch(
+          new LlmTurnRequestCompleted({
+            agentId: this.scopeContext.agentId,
+            turnId: request.source.turnId,
+          }),
+        );
       }
       void this.usage.record(
         this.scopeContext.agentContext,
@@ -680,14 +688,14 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
   }
 
   private isRecoveryTurn(set: ReadonlySet<number>, source: AgentLLMRequestSource | undefined): boolean {
-    if (source?.type !== 'turn') return false;
+    if (source?.turnId === undefined) return false;
     return set.has(source.turnId);
   }
 
   private mediaStripSnapshotForTurn(
     source: AgentLLMRequestSource | undefined,
   ): MediaStripSnapshot | undefined {
-    if (source?.type !== 'turn') return undefined;
+    if (source?.turnId === undefined) return undefined;
     return this.mediaStrippedTurns.get(source.turnId);
   }
 
@@ -753,7 +761,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
   }
 
   private resolveTurnConfig(source: AgentLLMRequestSource | undefined): TurnRequestConfig | undefined {
-    if (source?.type !== 'turn') return undefined;
+    if (source?.turnId === undefined) return undefined;
     return this.getOrCreateTurnConfig(source.turnId);
   }
 

@@ -8,6 +8,7 @@ import {
   ensureMainAgent,
   getLiveSessionById,
   interactions,
+  IShadowRegistry,
   type InteractionTags,
   type QuestionRequest,
   type QuestionResult,
@@ -435,5 +436,33 @@ describe('server-v2 /api/v1/sessions/{sid}/questions', () => {
   it('returns 40401 for an unknown session', async () => {
     const { body } = await getJson<null>('/api/v1/sessions/nope/questions?status=pending');
     expect(body.code).toBe(40401);
+  });
+
+  it('lists and resolves questions raised inside a shadow session', async () => {
+    const sid = await createSession();
+    const shadowSid = await createSession();
+    const registry = server!.core.accessor.get(IShadowRegistry);
+    registry.noteEnter(sid, shadowSid);
+    try {
+      const resultPromise: Promise<QuestionResult> = requestQuestion(
+        shadowSid,
+        makeRequest('q-shadow'),
+      );
+
+      const list = await getJson<ListWire>(`/api/v1/sessions/${sid}/questions?status=pending`);
+      expect(list.body.code).toBe(0);
+      expect(list.body.data.items).toHaveLength(1);
+      expect(list.body.data.items[0]!.question_id).toBe('q-shadow');
+      expect(list.body.data.items[0]!.session_id).toBe(sid);
+
+      const { body } = await postJson<ResolveWire>(`/api/v1/sessions/${sid}/questions/q-shadow`, {
+        answers: { q_0: { kind: 'single', option_id: 'opt_0_1' } },
+      });
+      expect(body.code).toBe(0);
+      expect(body.data.resolved).toBe(true);
+      await expect(resultPromise).resolves.toEqual({ answers: { 'Pick one': 'No' } });
+    } finally {
+      registry.noteExit(sid);
+    }
   });
 });

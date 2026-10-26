@@ -678,7 +678,7 @@ export class SessionEventBroadcaster {
     state.detached = undefined;
     this.attachWorkView(session, state);
     this.attachAgents(sessionId, session, state);
-    this.attachInteractions(sessionId, state);
+    this.attachInteractions(state);
     for (const [target, subscription] of state.targets) {
       if (subscription.transcriptGrades === undefined) continue;
       await this.subscribeTranscript(state, target, subscription.transcriptGrades, undefined);
@@ -747,7 +747,7 @@ export class SessionEventBroadcaster {
     try {
       this.attachWorkView(session, state);
       this.attachAgents(sessionId, session, state);
-      this.attachInteractions(sessionId, state);
+      this.attachInteractions(state);
     } catch (error) {
       this.sessions.delete(sessionId);
       await disposeSessionState(state);
@@ -1202,14 +1202,13 @@ export class SessionEventBroadcaster {
     }
   }
 
-  private attachInteractions(
-    sessionId: string,
-    state: SessionState,
-  ): void {
+  private attachInteractions(state: SessionState): void {
+    const engineSessionId = state.engineSessionId;
+    const presentedId = state.sessionId;
     const pendingOfSession = (): readonly Interaction[] =>
       interactions.findAll({
         resolved: false,
-        tags: { [INTERACTION_TAG_SESSION_ID]: sessionId },
+        tags: { [INTERACTION_TAG_SESSION_ID]: engineSessionId },
       });
     for (const i of pendingOfSession()) {
       state.knownInteractions.set(i.id, { kind: i.kind, agentId: interactionAgentId(i) });
@@ -1223,7 +1222,7 @@ export class SessionEventBroadcaster {
               kind: i.kind,
               agentId: interactionAgentId(i),
             });
-            const event = interactionRequestedEvent(i, sessionId);
+            const event = interactionRequestedEvent(i, presentedId);
             if (event !== undefined) {
               this.enqueueDurable(state, event);
             }
@@ -1235,7 +1234,7 @@ export class SessionEventBroadcaster {
           const known = state.knownInteractions.get(id);
           if (known === undefined) return;
           state.knownInteractions.delete(id);
-          const event = interactionResolvedEvent(known.kind, id, response, sessionId, known.agentId);
+          const event = interactionResolvedEvent(known.kind, id, response, presentedId, known.agentId);
           if (event !== undefined) {
             this.enqueueDurable(state, event);
           }

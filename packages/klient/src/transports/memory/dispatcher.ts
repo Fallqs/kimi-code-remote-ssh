@@ -306,7 +306,7 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
       throw new RPCError(NOT_FOUND, `session not found: ${scope.sessionId}`);
     }
     if (scope.agentId === undefined) {
-      return { kind: 'session', like: session, sessionId: scope.sessionId };
+      return { kind: 'session', like: session, sessionId: session.id };
     }
     if (scope.agentId === 'main') {
       const context = await ensureMainAgent(session);

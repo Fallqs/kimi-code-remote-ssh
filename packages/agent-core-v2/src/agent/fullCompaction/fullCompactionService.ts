@@ -26,7 +26,6 @@ import {
 } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
-import { stripDynamicToolContext } from '#/agent/toolSelect/dynamicTools';
 import { IAgentToolSelectService } from '#/agent/toolSelect/toolSelect';
 import { IAgentTodoService } from '#/features/todo/todoService';
 import { renderTodoList } from '#/features/todo/todoItem';
@@ -42,6 +41,7 @@ import {
 import { createUserMessage, type Message } from '#/llm-adapter/contract/message';
 import type { ToolDescription as Tool } from '#human/llm/message';
 import { inputTotal, type TokenUsage } from '#human/llm/usage';
+import { LlmTurnRequestCompleted } from '#/agent/llmRequester/llmRequestOps';
 import { IEventBus } from '#/app/event/eventBus';
 import type { CompactionFailedEvent, CompactionFinishedEvent } from '#/app/telemetry/events';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
@@ -55,6 +55,8 @@ import {
   IAgentFullCompactionService,
   type FullCompactionInput,
   type FullCompactionTask,
+  type IdleCompactionInput,
+  type IdleCompactionSettings,
 } from './fullCompaction';
 import {
   RuntimeCompactionStrategy,
@@ -145,7 +147,9 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
 
   private readonly strategy: CompactionStrategy;
   private readonly idleCompactionTimer = this._register(new TimeoutTimer());
+  private idleCompactionOverride: IdleCompactionSettings | undefined;
   private lastModelRequestCompletedAt: number | undefined;
+  private lastModelRequestTurnId: number | undefined;
   private _compacting: ActiveCompaction | null = null;
 
   constructor(
@@ -193,8 +197,16 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         this.scheduleIdleCompaction();
       }),
     );
-    this._register(this.models.onDidChangeModels(() => this.scheduleIdleCompaction()));
-    this._register(this.models.onDidChangeDefaultModel(() => this.scheduleIdleCompaction()));
+    this._register(
+      this.eventBus.subscribe(LlmTurnRequestCompleted, (event) => {
+        if (event.agentId !== this.agent.agentId) return;
+        const completedAt = this.llmRequester.lastTurnRequest()?.finishedAt;
+        if (completedAt === undefined) return;
+        this.lastModelRequestCompletedAt = completedAt;
+        this.lastModelRequestTurnId = event.turnId;
+        this.scheduleIdleCompaction();
+      }),
+    );
     this._register(
       this.loopService.hooks.onWillBeginStep.register('full-compaction', async (ctx, next) => {
         await this.beforeStep(ctx.signal, ctx.turnId);
@@ -254,6 +266,31 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
 
   get compacting(): FullCompactionTask | null {
     return this._compacting;
+  }
+
+  idleCompactionSettings(): IdleCompactionSettings {
+    return this.idleCompactionOverride ?? {
+      on: false,
+      minutes: this.configuredIdcMinutes(),
+      lowerBound: this.configuredIdcLowerBound(),
+    };
+  }
+
+  configureIdleCompaction(input: IdleCompactionInput): IdleCompactionSettings {
+    const settings = {
+      on: input.on,
+      minutes: input.minutes ?? this.configuredIdcMinutes(),
+      lowerBound: input.lowerBound ?? this.configuredIdcLowerBound(),
+    };
+    if (settings.on && (!Number.isFinite(settings.minutes) || settings.minutes <= 0)) {
+      throw new Error2(
+        ErrorCodes.COMPACTION_UNABLE,
+        'Idle compaction requires a positive minutes value. Pass minutes or configure idc_minutes for the active model.',
+      );
+    }
+    this.idleCompactionOverride = settings;
+    this.scheduleIdleCompaction();
+    return settings;
   }
 
   cancel(): void {
@@ -368,7 +405,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       const active = this.createActiveCompaction(
         data.source,
         tokenCount,
-        data.source === 'auto' ? this.activeTurnId : undefined,
+        data.source === 'auto' ? (this.activeTurnId ?? this.lastModelRequestTurnId) : undefined,
         quiescence,
       );
       this._compacting = active.task;
@@ -519,7 +556,6 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
 
   private async afterStep(): Promise<void> {
     this.consecutiveOverflowCompactions = 0;
-    this.lastModelRequestCompletedAt = this.llmRequester.lastTurnRequest()?.finishedAt ?? Date.now();
     if (this.strategy.checkAfterStep) {
       this.checkAutoCompaction(false);
     }
@@ -528,11 +564,11 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
 
   private scheduleIdleCompaction(): void {
     this.idleCompactionTimer.cancel();
+    const settings = this.idleCompactionOverride;
+    if (settings?.on !== true) return;
     const completedAt = this.lastModelRequestCompletedAt;
     if (completedAt === undefined) return;
-    const minutes = this.idcMinutes();
-    if (minutes <= 0) return;
-    const delay = Math.max(0, completedAt + minutes * 60_000 - Date.now());
+    const delay = Math.max(0, completedAt + settings.minutes * 60_000 - Date.now());
     this.idleCompactionTimer.cancelAndSet(
       () => this.runIdleCompaction(completedAt),
       Math.min(delay, MAX_TIMER_DELAY_MS),
@@ -541,29 +577,34 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
 
   private runIdleCompaction(completedAt: number): void {
     if (this.lastModelRequestCompletedAt !== completedAt) return;
-    const minutes = this.idcMinutes();
-    if (minutes <= 0) return;
-    if (Date.now() < completedAt + minutes * 60_000) {
+    const settings = this.idleCompactionOverride;
+    if (settings?.on !== true) return;
+    if (Date.now() < completedAt + settings.minutes * 60_000) {
       this.scheduleIdleCompaction();
       return;
     }
-    if (
-      this.activeTurnId !== undefined ||
-      this.loopService.snapshot().state === 'running' ||
-      this._compacting !== null
-    ) return;
-    const lowerBound = this.profile.resolveModelContext().idcLowerBound
-      ?? DEFAULT_IDLE_COMPACTION_THRESHOLD_TOKENS;
-    if (this.tokenCountWithPending() < lowerBound || this.context.get().length === 0) return;
+    if (this._compacting !== null || this.blockedByActiveTurn()) return;
+    if (this.tokenCountWithPending() < settings.lowerBound || this.context.get().length === 0) return;
     this.lastModelRequestCompletedAt = undefined;
     this.beginAutoCompaction(false);
   }
 
-  private idcMinutes(): number {
+  private blockedByActiveTurn(): boolean {
+    const snapshot = this.loopService.snapshot();
+    if (this.activeTurnId === undefined) return snapshot.state === 'running';
+    return snapshot.turn?.phase !== 'tool_call' || snapshot.turn.activeToolCalls.length === 0;
+  }
+
+  private configuredIdcMinutes(): number {
     const modelAlias = this.profile.data().modelAlias;
     const model = modelAlias === undefined ? undefined : this.models.get(modelAlias);
     const configured = model === undefined ? undefined : effectiveModelConfig(model).idcMinutes;
     return typeof configured === 'number' && Number.isFinite(configured) ? configured : 0;
+  }
+
+  private configuredIdcLowerBound(): number {
+    return this.profile.resolveModelContext().idcLowerBound
+      ?? DEFAULT_IDLE_COMPACTION_THRESHOLD_TOKENS;
   }
 
   private checkAutoCompaction(throwOnLimit = true): boolean {
@@ -700,7 +741,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
 
       const maxAttempts = resolvedModel.compactionMaxAttempts ?? MAX_COMPACTION_RETRY_ATTEMPTS;
       let attempt: CompactionAttemptResult | undefined;
-      let historyForModel: readonly ContextMessage[] = stripDynamicToolContext(originalHistory);
+      let historyForModel: readonly ContextMessage[] = this.toolSelect.shapeHistory(originalHistory);
       let droppedCount = 0;
       let overflowShrinkCount = 0;
       let requestAttempts = 0;
@@ -711,6 +752,24 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       );
       droppedCount += historyForModel.length - preShrunkHistory.length;
       historyForModel = preShrunkHistory;
+      const runRequest = async (messages: readonly Message[], droppedCount: number) => {
+        const request = this.llmRequester.start(
+          {
+            messages,
+            maxOutputSize: compactionMaxOutputSize,
+            source: {
+              type: 'operation',
+              turnId: active.originTurnId,
+              requestKind: 'full_compaction',
+              logFields: { droppedCount },
+            },
+          },
+          undefined,
+          signal,
+        );
+        active.trace = request.trace;
+        return request.result;
+      };
       while (true) {
         const messagesToCompact = historyForModel;
         const messages: Message[] = [...messagesToCompact, createUserMessage(instruction)];
@@ -718,27 +777,9 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         requestAttempts += 1;
 
         try {
-          const runRequest = async () => {
-            const request = this.llmRequester.start(
-              {
-                messages,
-                maxOutputSize: compactionMaxOutputSize,
-                source: {
-                  type: 'operation',
-                  turnId: active.originTurnId,
-                  requestKind: 'full_compaction',
-                  logFields: { droppedCount },
-                },
-              },
-              undefined,
-              signal,
-            );
-            active.trace = request.trace;
-            return request.result;
-          };
           const result = await runWithCredentialRecovery(
             this.llmRequester.currentCredentialProvider(),
-            runRequest,
+            runRequest.bind(null, messages, droppedCount),
             signal,
           );
           attempt = collectSummary(result);
@@ -883,9 +924,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       compactionMaxOutputSize === undefined
         ? Math.floor(effectiveMaxTokens / 8)
         : Math.min(compactionMaxOutputSize, Math.floor(effectiveMaxTokens / 8));
-    const messageBudget =
-      Math.floor((effectiveMaxTokens - outputReserve) * OVERFLOW_CONTEXT_SAFETY_RATIO) -
-      this.requestTokens([]);
+    const messageBudget = effectiveMaxTokens - outputReserve - this.requestTokens([]);
     const estimatedMessagesTokens =
       this.tokenCounting.estimateMessages(history) +
       this.tokenCounting.estimateMessage(createUserMessage(instruction));

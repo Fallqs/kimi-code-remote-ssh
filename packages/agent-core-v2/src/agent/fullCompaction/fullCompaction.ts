@@ -19,12 +19,26 @@ export interface FullCompactionTask {
   readonly traceId?: string;
 }
 
+export interface IdleCompactionInput {
+  readonly on: boolean;
+  readonly minutes?: number;
+  readonly lowerBound?: number;
+}
+
+export interface IdleCompactionSettings {
+  readonly on: boolean;
+  readonly minutes: number;
+  readonly lowerBound: number;
+}
+
 export interface IAgentFullCompactionService {
   readonly _serviceBrand: undefined;
 
   readonly compacting: FullCompactionTask | null;
   begin(input: FullCompactionInput): boolean;
   cancel(): void;
+  idleCompactionSettings(): IdleCompactionSettings;
+  configureIdleCompaction(input: IdleCompactionInput): IdleCompactionSettings;
 
   readonly hooks: Hooks<{
     onWillCompact: FullCompactionTask;

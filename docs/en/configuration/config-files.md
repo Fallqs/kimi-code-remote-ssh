@@ -152,7 +152,7 @@ Each entry in the `models` table defines a model alias (the name used in `defaul
 | `max_context_size` | `integer` | Yes | Maximum context length in tokens; must be at least 1 |
 | `max_input_size` | `integer` | No | Declared per-request input limit; compaction, context-overflow checks, and usage ratios prefer it, completion budgeting keeps the total window |
 | `max_output_size` | `integer` | No | Per-request output token cap (maps to `max_tokens`); currently only the `anthropic` provider reads it |
-| `idc_minutes` | `number` | No | Idle auto-compaction delay in minutes; defaults to `0` (disabled), and non-positive values disable it. Once the latest model request has been complete for this long, compaction runs when the context meets [`loop_control.idc_lower_bound`](#loop_control); an active turn finishes first |
+| `idc_minutes` | `number` | No | Default idle delay in minutes used by [`idc_switch`](../reference/tools.md#context-compaction) when `minutes` is omitted; defaults to `0`. This does not enable idle auto-compaction by itself—the main agent must explicitly enable it |
 | `capabilities` | `array<string>` | No | Capability tags added explicitly: `thinking`, `always_thinking`, `image_in`, `video_in`, `audio_in`, `tool_use`, `dynamically_loaded_tools`; only ever added, never removed |
 | `support_efforts` | `array<string>` | No | Thinking effort levels the model accepts; unsupported values fall back to `default_effort`, out-of-list values fail; managed refreshes may rewrite it (pin via overrides) |
 | `default_effort` | `string` | No | Default thinking effort for the model; managed and open-platform refreshes may rewrite it. Pin via [model overrides](#model-overrides) |
@@ -331,7 +331,7 @@ Configuration errors fail loudly instead of falling back silently. Session creat
 | `max_attempts_per_step` | `integer` | `10` | Maximum total attempts for a failing step, including the initial attempt |
 | `reserved_context_size` | `integer` | — | Number of tokens reserved for model output; automatic compaction is triggered when the remaining context window falls below this value |
 | `compaction_max_attempts` | `integer` | `5` | Maximum total attempts for a failing compaction request, including the initial attempt |
-| `idc_lower_bound` | `integer` | `65536` | Minimum context size in tokens for idle auto-compaction; set the model's [`idc_minutes`](#models) to a positive value to enable it |
+| `idc_lower_bound` | `integer` | `65536` | Default minimum context size in tokens used by [`idc_switch`](../reference/tools.md#context-compaction) when `lower_bound` is omitted; does not enable idle auto-compaction by itself |
 
 `max_steps_per_turn` can be overridden by the `KIMI_LOOP_MAX_STEPS_PER_TURN` environment variable, and `max_attempts_per_step` by `KIMI_LOOP_MAX_ATTEMPTS_PER_STEP`; both take higher priority than the config file. The former `KIMI_LOOP_MAX_RETRIES_PER_STEP` variable is deprecated but still honored (with a startup warning) when the new one is unset.
 

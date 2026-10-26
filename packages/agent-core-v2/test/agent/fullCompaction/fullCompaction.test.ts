@@ -28,8 +28,7 @@ import type { IExternalHooksRunnerService } from '#/features/externalHooks/app/e
 import { MASTER_ENV } from '#/app/flag/flagService';
 import { estimateTokensForMessages } from '#/llm-adapter/contract/tokens';
 import { recordingTelemetry, type TelemetryRecord } from '../../app/telemetry/stubs';
-import type { TestAgentContext, TestAgentOptions, TestAgentServiceOverride } from '../../harness';
-import { agentService, appService, appServices, createCommandRunner, execEnvServices, hostEnvironmentServices, requesterFromGenerateFn, sessionServices, testAgent as createTestAgent, type LegacyGenerateResult } from '../../harness';
+import { agentService, appService, appServices, createCommandRunner, execEnvServices, hostEnvironmentServices, requesterFromGenerateFn, sessionServices, testAgent as createTestAgent, type LegacyGenerateResult, type TestAgentContext, type TestAgentOptions, type TestAgentServiceOverride } from '../../harness';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 import { ISessionTokenCountingService } from '#/session/tokenCounting/sessionTokenCounting';
@@ -45,13 +44,19 @@ import {
   DYNAMIC_TOOL_SCHEMA_VARIANT,
   normalizeAgentProfile,
   type ExecutableTool,
+  type ExecutableToolResult,
   type ResolvedAgentProfile,
   type ToolExecution,
 } from '#/index';
+import { IdcSwitchTool } from '#/agent/tools/idc-switch/idcSwitchTool';
+import type { IdcSwitchInput } from '#/agent/tools/idc-switch/idc-switch';
+import { IdcStatusTool } from '#/agent/tools/idc-status/idcStatusTool';
+import { makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IWireService } from '#/wire/wire';
 import { IAgentTodoService } from '#/features/todo/todoService';
 import { IAgentGoalService } from '#/features/goal/goalService';
+import { IAgentPlanService } from '#/features/plan/plan';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 
 type GenerateFn = NonNullable<TestAgentOptions['generate']>;
@@ -433,13 +438,15 @@ describe('FullCompaction', () => {
       provider: CATALOGUED_PROVIDER,
       modelCapabilities: { ...CATALOGUED_MODEL_CAPABILITIES, max_context_tokens: 1_000_000 },
     });
-    await setIdcMinutes(ctx, 25);
+    await enableIdc(ctx, 25);
     ctx.appendExchange(1, 'old user', 'old assistant', 65_536);
     ctx.mockNextResponse({ type: 'text', text: 'Answer.' });
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Continue.' }] });
     await ctx.untilTurnEnd();
+    const turnCall = ctx.llmCalls[0]!;
     rebaseTokenCount(ctx, 65_536);
     expect(ctx.get(IAgentLoopService).snapshot().activeTurnId).toBeUndefined();
+    ctx.get(IAgentProfileService).update({ systemPrompt: 'Changed after the turn ended.' });
     ctx.mockNextResponse({ type: 'text', text: 'Idle compaction summary.' });
     const completed = ctx.once('compaction.completed');
 
@@ -450,12 +457,16 @@ describe('FullCompaction', () => {
     await completed;
 
     expect(ctx.llmCalls).toHaveLength(2);
+    const compactionCall = ctx.llmCalls[1]!;
+    expect(compactionCall.systemPrompt).toBe(turnCall.systemPrompt);
+    expect(compactionCall.tools).toEqual(turnCall.tools);
+    expect(compactionCall.history.slice(0, turnCall.history.length)).toEqual(turnCall.history);
     expect(ctx.compactHistory().some((message) => message.text.includes('Idle compaction summary.'))).toBe(true);
   });
 
-  it('keeps idle auto-compaction disabled by default and for non-positive timeouts', async () => {
+  it('keeps idle auto-compaction disabled until explicitly enabled', async () => {
     vi.useFakeTimers();
-    for (const timeout of [undefined, 0, -1]) {
+    for (const timeout of [undefined, 0, -1, 25]) {
       const ctx = testAgent();
       ctx.configure({
         provider: CATALOGUED_PROVIDER,
@@ -473,6 +484,132 @@ describe('FullCompaction', () => {
     }
   });
 
+  it('reports defaults and rejects enablement without a positive timeout', async () => {
+    const ctx = testAgent({
+      initialConfig: {
+        providers: {},
+        loopControl: { idcLowerBound: 70_000 },
+      },
+    });
+    ctx.configure({ provider: CATALOGUED_PROVIDER });
+    const compaction = ctx.get(IAgentFullCompactionService);
+
+    expect(compaction.idleCompactionSettings()).toEqual({
+      on: false,
+      minutes: 0,
+      lowerBound: 70_000,
+    });
+    expect(() => compaction.configureIdleCompaction({ on: true })).toThrow(
+      'Idle compaction requires a positive minutes value.',
+    );
+    expect(compaction.idleCompactionSettings().on).toBe(false);
+
+    await setIdcMinutes(ctx, 25);
+    expect(compaction.idleCompactionSettings()).toEqual({
+      on: false,
+      minutes: 25,
+      lowerBound: 70_000,
+    });
+    expect(compaction.configureIdleCompaction({ on: true })).toEqual({
+      on: true,
+      minutes: 25,
+      lowerBound: 70_000,
+    });
+  });
+
+  it('cancels a pending idle compaction when switched off', async () => {
+    vi.useFakeTimers();
+    const ctx = testAgent();
+    ctx.configure({
+      provider: CATALOGUED_PROVIDER,
+      modelCapabilities: { ...CATALOGUED_MODEL_CAPABILITIES, max_context_tokens: 1_000_000 },
+    });
+    await enableIdc(ctx, 0.001);
+    ctx.appendExchange(1, 'old user', 'old assistant', 65_536);
+    ctx.mockNextResponse({ type: 'text', text: 'Answer.' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Continue.' }] });
+    await ctx.untilTurnEnd();
+    rebaseTokenCount(ctx, 65_536);
+
+    expect(ctx.get(IAgentFullCompactionService).configureIdleCompaction({ on: false }).on).toBe(false);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(ctx.llmCalls).toHaveLength(1);
+  });
+
+  it('freezes idle compaction settings across model switches', async () => {
+    vi.useFakeTimers();
+    const ctx = testAgent();
+    ctx.configure({
+      provider: CATALOGUED_PROVIDER,
+      modelCapabilities: { ...CATALOGUED_MODEL_CAPABILITIES, max_context_tokens: 1_000_000 },
+    });
+    await enableIdc(ctx, 10);
+    ctx.appendExchange(1, 'old user', 'old assistant', 65_536);
+    ctx.mockNextResponse({ type: 'text', text: 'Answer.' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Continue.' }] });
+    await ctx.untilTurnEnd();
+    rebaseTokenCount(ctx, 65_536);
+
+    const models = ctx.get(IModelService);
+    const profile = ctx.get(IAgentProfileService);
+    const alias = profile.data().modelAlias;
+    if (alias === undefined) throw new Error('Expected a configured model');
+    const model = models.get(alias);
+    if (model === undefined) throw new Error(`Missing model ${alias}`);
+    await models.set('other-model', { ...model, model: 'other-model', idcMinutes: 0.001 });
+    profile.update({ modelAlias: 'other-model' });
+
+    const compaction = ctx.get(IAgentFullCompactionService);
+    expect(compaction.idleCompactionSettings()).toEqual({
+      on: true,
+      minutes: 10,
+      lowerBound: 65_536,
+    });
+    ctx.mockNextResponse({ type: 'text', text: 'Frozen-timeout summary.' });
+    const completed = ctx.once('compaction.completed');
+    await vi.advanceTimersByTimeAsync(60);
+    expect(ctx.llmCalls).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(10 * 60_000 - 60);
+    await completed;
+    expect(ctx.llmCalls).toHaveLength(2);
+    expect(compaction.configureIdleCompaction({ on: true }).minutes).toBe(0.001);
+  });
+
+  it('provides main-agent switch and status tools', async () => {
+    const ctx = testAgent();
+    ctx.configure({ provider: CATALOGUED_PROVIDER });
+    await setIdcMinutes(ctx, 5);
+    const compaction = ctx.get(IAgentFullCompactionService);
+    const mainScope = makeAgentScopeContext({ agentId: 'main', agentScope: '' });
+    const subagentScope = makeAgentScopeContext({ agentId: 'agent-1', agentScope: '' });
+    const switchTool = new IdcSwitchTool(compaction, mainScope);
+    const statusTool = new IdcStatusTool(compaction, mainScope);
+
+    const initial = await runTool(statusTool, {});
+    expect(initial.isError).toBe(false);
+    expect(initial.output).toBe('on: false\nminutes: 5\nlower_bound: 65536');
+
+    const disabled = await runTool(switchTool, {} as IdcSwitchInput);
+    expect(disabled.isError).toBe(false);
+    expect(disabled.output).toContain('on: false');
+    const enabled = await runTool(switchTool, { on: true });
+    expect(enabled.isError).toBe(false);
+    expect(enabled.output).toBe('on: true\nminutes: 5\nlower_bound: 65536');
+    expect((await runTool(statusTool, {})).output).toBe(enabled.output);
+
+    const deniedSwitch = await runTool(new IdcSwitchTool(compaction, subagentScope), { on: false });
+    expect(deniedSwitch).toEqual({
+      output: 'Idle-compaction tools are only supported by the main agent.',
+      isError: true,
+    });
+    const deniedStatus = await runTool(new IdcStatusTool(compaction, subagentScope), {});
+    expect(deniedStatus).toEqual({
+      output: 'Idle-compaction tools are only supported by the main agent.',
+      isError: true,
+    });
+    expect(compaction.idleCompactionSettings().on).toBe(true);
+  });
+
   it('honors the configured idle compaction context threshold', async () => {
     vi.useFakeTimers();
     const ctx = testAgent({
@@ -485,7 +622,7 @@ describe('FullCompaction', () => {
       provider: CATALOGUED_PROVIDER,
       modelCapabilities: { ...CATALOGUED_MODEL_CAPABILITIES, max_context_tokens: 1_000_000 },
     });
-    await setIdcMinutes(ctx, 1);
+    await enableIdc(ctx, 1);
     ctx.appendExchange(1, 'old user', 'old assistant', 65_536);
     ctx.mockNextResponse({ type: 'text', text: 'Answer.' });
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Continue.' }] });
@@ -508,31 +645,115 @@ describe('FullCompaction', () => {
     expect(ctx.llmCalls).toHaveLength(3);
   });
 
-  it('waits for an active turn to end before idle auto-compaction', async () => {
+  it('runs idle auto-compaction while a tool approval is pending', async () => {
+    vi.useFakeTimers();
     const ctx = testAgent(execEnvServices({ processRunner: createCommandRunner('should-not-run') }));
     ctx.configure({
       provider: CATALOGUED_PROVIDER,
       modelCapabilities: { ...CATALOGUED_MODEL_CAPABILITIES, max_context_tokens: 1_000_000 },
       tools: ['Bash'],
     });
-    await setIdcMinutes(ctx, 0.001);
+    await enableIdc(ctx, 0.001);
     ctx.appendExchange(1, 'old user', 'old assistant', 65_536);
     ctx.mockNextResponse({ type: 'text', text: 'I will wait for approval.' }, bashCall());
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Start the active turn' }] });
     const approval = await ctx.takeApprovalRequest();
     rebaseTokenCount(ctx, 65_536);
+    ctx.mockNextResponse({ type: 'text', text: 'Compaction while waiting for tool approval.' });
+    const completed = ctx.once('compaction.completed');
 
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(ctx.llmCalls).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(60);
+    expect(ctx.llmCalls).toHaveLength(2);
+    await completed;
 
     ctx.mockNextResponse({ type: 'text', text: 'Turn done.' });
     approval.respond({ decision: 'rejected', selectedLabel: 'reject' });
     await ctx.untilTurnEnd();
-    rebaseTokenCount(ctx, 65_536);
-    ctx.mockNextResponse({ type: 'text', text: 'Delayed idle summary.' });
-    const completed = ctx.once('compaction.completed');
-    await completed;
+    expect(ctx.llmCalls).toHaveLength(3);
+  });
 
+  it('runs idle auto-compaction while AskUserQuestion is waiting for the user', async () => {
+    vi.useFakeTimers();
+    const ctx = testAgent();
+    ctx.configure({
+      provider: CATALOGUED_PROVIDER,
+      modelCapabilities: { ...CATALOGUED_MODEL_CAPABILITIES, max_context_tokens: 1_000_000 },
+      tools: ['AskUserQuestion'],
+    });
+    await enableIdc(ctx, 0.001);
+    ctx.appendExchange(1, 'old user', 'old assistant', 65_536);
+    const questionCall: ToolCall = {
+      type: 'function',
+      id: 'call_question_idc',
+      name: 'AskUserQuestion',
+      arguments: JSON.stringify({
+        questions: [
+          {
+            question: 'Continue?',
+            header: 'Next',
+            options: [
+              { label: 'Yes', description: 'Continue the task.' },
+              { label: 'No', description: 'Stop here.' },
+            ],
+          },
+        ],
+      }),
+    };
+    ctx.mockNextResponse({ type: 'text', text: 'I need your answer.' }, questionCall);
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Ask me before continuing' }] });
+    await ctx.untilQuestionRequest();
+    rebaseTokenCount(ctx, 65_536);
+    ctx.mockNextResponse({ type: 'text', text: 'Compaction while waiting for an answer.' });
+    const completed = ctx.once('compaction.completed');
+
+    await vi.advanceTimersByTimeAsync(60);
+    expect(ctx.llmCalls).toHaveLength(2);
+    await completed;
+    expect(ctx.compactHistory().some((message) => message.text.includes('Compaction while waiting for an answer.'))).toBe(true);
+
+    ctx.mockNextResponse({ type: 'text', text: 'Turn done after the answer.' });
+    ctx.snapshots.respondPending('requestQuestion', questionCall.id, { answers: { Continue: 'Yes' } });
+    await ctx.untilTurnEnd();
+    expect(ctx.llmCalls).toHaveLength(3);
+  });
+
+  it('runs idle auto-compaction while ExitPlanMode is waiting for approval', async () => {
+    vi.useFakeTimers();
+    const ctx = testAgent();
+    ctx.configure({
+      provider: CATALOGUED_PROVIDER,
+      modelCapabilities: { ...CATALOGUED_MODEL_CAPABILITIES, max_context_tokens: 1_000_000 },
+      tools: ['ExitPlanMode'],
+    });
+    await ctx.rpc.setPermission({ mode: 'manual' });
+    const plan = ctx.get(IAgentPlanService);
+    await plan.enter('idc-plan');
+    const planPath = (await plan.status())?.path;
+    if (planPath === undefined) throw new Error('Expected an active plan file');
+    writeFileSync(planPath, '# Plan\n\n- Inspect\n- Compact\n- Verify');
+    await enableIdc(ctx, 0.001);
+    ctx.appendExchange(1, 'old user', 'old assistant', 65_536);
+    const exitPlanModeCall: ToolCall = {
+      type: 'function',
+      id: 'call_exit_plan_idc',
+      name: 'ExitPlanMode',
+      arguments: '{}',
+    };
+    ctx.mockNextResponse({ type: 'text', text: 'I will present the plan.' }, exitPlanModeCall);
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Show the plan' }] });
+    const approval = await ctx.takeApprovalRequest();
+    rebaseTokenCount(ctx, 65_536);
+    ctx.mockNextResponse({ type: 'text', text: 'Compaction while waiting for plan review.' });
+    const completed = ctx.once('compaction.completed');
+
+    await vi.advanceTimersByTimeAsync(60);
+    expect(ctx.llmCalls).toHaveLength(2);
+    await completed;
+    expect(ctx.compactHistory().some((message) => message.text.includes('Compaction while waiting for plan review.'))).toBe(true);
+
+    ctx.mockNextResponse({ type: 'text', text: 'Turn done after plan review.' });
+    approval.respond({ decision: 'rejected', selectedLabel: 'Revise', feedback: 'Tighten it.' });
+    await ctx.untilTurnEnd();
     expect(ctx.llmCalls).toHaveLength(3);
   });
 
@@ -2418,6 +2639,65 @@ describe('FullCompaction', () => {
     }
   });
 
+  it('preserves dynamic tool declarations in the compaction request prefix', async () => {
+    vi.stubEnv(MASTER_ENV, '1');
+    const ctx = testAgent(
+      agentService(IAgentToolSelectAnnouncementsService, { _serviceBrand: undefined }),
+    );
+    const parameters = {
+      type: 'object',
+      properties: {
+        payload: { type: 'string', description: 'Deferred tool schema' },
+      },
+    };
+    ctx.configure({
+      provider: CATALOGUED_PROVIDER,
+      modelCapabilities: {
+        ...CATALOGUED_MODEL_CAPABILITIES,
+        max_context_tokens: 40_000,
+        dynamically_loaded_tools: true,
+      },
+      tools: [LARGE_MCP_TOOL],
+    });
+    const registration = ctx
+      .get(IAgentToolRegistryService)
+      .register(mcpTool(LARGE_MCP_TOOL, parameters), { source: 'mcp', disclosure: 'deferred' });
+    try {
+      ctx.context.append({
+        role: 'system',
+        content: [],
+        toolCalls: [],
+        tools: [
+          {
+            name: LARGE_MCP_TOOL,
+            description: `${LARGE_MCP_TOOL} desc`,
+            parameters,
+          },
+        ],
+        origin: { kind: 'injection', variant: DYNAMIC_TOOL_SCHEMA_VARIANT },
+      });
+      ctx.appendExchange(1, 'seed user', 'seed assistant', 20);
+      ctx.mockNextResponse({ type: 'text', text: 'First answer with dynamic tools.' });
+      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Start with dynamic tools' }] });
+      await ctx.untilTurnEnd();
+      const turnCall = ctx.llmCalls[0]!;
+
+      ctx.appendExchange(2, 'large user', 'large assistant', 36_000);
+      ctx.mockNextResponse({ type: 'text', text: 'Dynamic-tool prefix summary.' });
+      ctx.mockNextResponse({ type: 'text', text: 'Answer after dynamic-tool compaction.' });
+      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Continue with dynamic tools' }] });
+      await ctx.untilTurnEnd();
+
+      expect(ctx.llmCalls).toHaveLength(3);
+      const compactionCall = ctx.llmCalls[1]!;
+      expect(compactionCall.systemPrompt).toBe(turnCall.systemPrompt);
+      expect(compactionCall.tools).toEqual(turnCall.tools);
+      expect(compactionCall.history.slice(0, turnCall.history.length)).toEqual(turnCall.history);
+    } finally {
+      registration.dispose();
+    }
+  });
+
   it('triggers auto compaction when pending tokens cross the reserved threshold', async () => {
     const ctx = testAgent({
       initialConfig: {
@@ -3802,6 +4082,24 @@ async function setIdcMinutes(ctx: TestAgentContext, minutes: number): Promise<vo
   await models.set(alias, { ...model, idcMinutes: minutes });
 }
 
+async function enableIdc(ctx: TestAgentContext, minutes: number): Promise<void> {
+  await setIdcMinutes(ctx, minutes);
+  ctx.get(IAgentFullCompactionService).configureIdleCompaction({ on: true });
+}
+
+async function runTool<Input>(
+  tool: ExecutableTool<Input>,
+  input: Input,
+): Promise<ExecutableToolResult> {
+  const execution = await tool.resolveExecution(input);
+  if (!('execute' in execution)) return execution;
+  return execution.execute({
+    turnId: 0,
+    toolCallId: 'test-call',
+    signal: new AbortController().signal,
+  });
+}
+
 function rebaseTokenCount(ctx: TestAgentContext, tokens: number): void {
   ctx.get(ISessionTokenCountingService).rebase(ctx.agentContext, {
     length: ctx.context.get().length,
@@ -4299,8 +4597,8 @@ describe('FullCompaction pre-shrink', () => {
 
   function appendPreShrinkHistory(ctx: TestAgentContext, tokenTotals?: readonly [number, number, number]): void {
     const [oldTotal = 20, midTotal = 40, recentTotal = 80] = tokenTotals ?? [];
-    ctx.appendExchange(1, 'old user one', `old assistant one ${'a'.repeat(32_000)}`, oldTotal);
-    ctx.appendExchange(2, 'mid user two', `mid assistant two ${'b'.repeat(16_000)}`, midTotal);
+    ctx.appendExchange(1, 'old user one', `old assistant one ${'a'.repeat(160_000)}`, oldTotal);
+    ctx.appendExchange(2, 'mid user two', `mid assistant two ${'b'.repeat(32_000)}`, midTotal);
     ctx.appendExchange(3, 'recent user three', `recent assistant three ${'c'.repeat(1_000)}`, recentTotal);
   }
 
@@ -4484,6 +4782,31 @@ describe('FullCompaction pre-shrink', () => {
       ctx.compactHistory().some((message) => message.text.includes('Recovered pre-shrunk summary.')),
     ).toBe(true);
     await ctx.expectResumeMatches();
+  });
+
+  it('keeps the previous turn request as a prefix of the compaction request when history fits', async () => {
+    const ctx = testAgent();
+    ctx.configure({
+      provider: CATALOGUED_PROVIDER,
+      modelCapabilities: PRE_SHRINK_CAPABILITIES,
+    });
+    ctx.appendExchange(1, 'seed user', 'seed assistant', 20);
+    ctx.mockNextResponse({ type: 'text', text: 'First answer.' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Start with an ordinary request' }] });
+    await ctx.untilTurnEnd();
+    const turnCall = ctx.llmCalls[0]!;
+
+    ctx.appendExchange(2, 'large user', 'large assistant', 36_000);
+    ctx.mockNextResponse({ type: 'text', text: 'Prefix-preserving summary.' });
+    ctx.mockNextResponse({ type: 'text', text: 'Answer after prefix-preserving compaction.' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Continue after compaction' }] });
+    await ctx.untilTurnEnd();
+
+    expect(ctx.llmCalls).toHaveLength(3);
+    const compactionCall = ctx.llmCalls[1]!;
+    expect(compactionCall.systemPrompt).toBe(turnCall.systemPrompt);
+    expect(compactionCall.tools).toEqual(turnCall.tools);
+    expect(compactionCall.history.slice(0, turnCall.history.length)).toEqual(turnCall.history);
   });
 
   it('pre-shrinks the auto compaction triggered before a step', async () => {

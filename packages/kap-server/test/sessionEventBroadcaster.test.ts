@@ -3438,6 +3438,44 @@ describe('SessionEventBroadcaster', () => {
       ).toEqual([1, 2]);
     });
 
+    it('broadcasts shadow-tagged interactions under the client session id', async () => {
+      const source = new FakeLifecycle();
+      source.addAgent('main');
+      sessions.set('s1', source);
+      const shadow = new FakeLifecycle('shadow-1');
+      shadow.addAgent('main');
+      sessions.set('shadow-1', shadow);
+
+      const view = collectingTarget();
+      await bc.subscribe('s1', view.target);
+
+      eventBus.emit(switchEvent('enter', 's1', 'shadow-1'));
+      await bc.getCursor('s1');
+
+      interactions.enqueue({
+        id: 'q-shadow',
+        kind: 'question',
+        payload: { questions: [{ question: 'Pick', options: [{ label: 'A' }] }] },
+        tags: { sessionId: 'shadow-1' },
+      });
+      await bc.getCursor('s1');
+
+      const requested = view.envelopes.find((e) => e.type === 'event.question.requested');
+      expect(requested).toMatchObject({
+        session_id: 's1',
+        payload: { sessionId: 's1', session_id: 's1', question_id: 'q-shadow' },
+      });
+
+      interactions.respond('q-shadow', { answers: { q_0: 'opt_0_0' } });
+      await bc.getCursor('s1');
+
+      const answered = view.envelopes.find((e) => e.type === 'event.question.answered');
+      expect(answered).toMatchObject({
+        session_id: 's1',
+        payload: { sessionId: 's1', question_id: 'q-shadow' },
+      });
+    });
+
     it('rebuilds the transcript store from the switched-to engine across enter and exit', async () => {
       const source = new FakeLifecycle();
       source.addAgent('main');

@@ -18,12 +18,14 @@ import {
   ISessionLifecycleService,
   ISessionTokenCountingService,
   ISessionUsageService,
+  IShadowRegistry,
   IWireService,
   ISessionManager,
   ITelemetryService,
   IWorkspaceService,
   agentContextOf,
   getLiveSessionById,
+  interactions,
   resumeSessionById,
 } from '@moonshot-ai/agent-core-v2';
 import { sessionSnapshotResponseSchema } from '../src/protocol/rest-snapshot';
@@ -83,6 +85,7 @@ describe('server-v2 snapshot route enrichment', () => {
       ]),
     };
     const session = {
+      id: sessionId,
       accessor: fakeAccessor([
         [ISessionContext, { workspaceId }],
         [
@@ -258,6 +261,7 @@ describe('server-v2 snapshot route enrichment', () => {
       ]),
     };
     const session = {
+      id: sessionId,
       accessor: fakeAccessor([
         [ISessionContext, { workspaceId }],
         [
@@ -496,6 +500,45 @@ describe('server-v2 GET /api/v1/sessions/:id/snapshot', () => {
     } as never);
     const body = (await res.json()) as { code: number };
     expect(body.code).not.toBe(0);
+  });
+
+  it('lists pending interactions raised inside a shadow session', async () => {
+    const sid = await createSession();
+    const shadowSid = await createSession();
+    await ensureMainAgent(shadowSid);
+    const registry = server!.core.accessor.get(IShadowRegistry);
+    registry.noteEnter(sid, shadowSid);
+    try {
+      interactions.enqueue({
+        id: 'approval_shadow_snap',
+        kind: 'approval',
+        payload: {
+          toolCallId: 'tc-shadow-snap',
+          toolName: 'Bash',
+          action: 'run',
+          display: { kind: 'command', command: 'echo hi' },
+        },
+        tags: { agentId: 'main', sessionId: shadowSid, toolCallId: 'tc-shadow-snap' },
+      });
+      interactions.enqueue({
+        id: 'question_shadow_snap',
+        kind: 'question',
+        payload: {
+          toolCallId: 'tc-shadow-question',
+          questions: [{ question: 'Pick', options: [{ label: 'A' }, { label: 'B' }] }],
+        },
+        tags: { agentId: 'main', sessionId: shadowSid, toolCallId: 'tc-shadow-question' },
+      });
+
+      const snap = await snapshot(sid);
+      expect(snap.pending_approvals.map((a) => a.approval_id)).toEqual(['approval_shadow_snap']);
+      expect(snap.pending_approvals[0]!.session_id).toBe(sid);
+      expect(snap.pending_questions.map((q) => q.question_id)).toEqual(['question_shadow_snap']);
+      expect(snap.pending_questions[0]!.session_id).toBe(sid);
+    } finally {
+      registry.noteExit(sid);
+      interactions.purgeSession(shadowSid);
+    }
   });
 
   it('loads a cold (not live) session instead of 404', async () => {

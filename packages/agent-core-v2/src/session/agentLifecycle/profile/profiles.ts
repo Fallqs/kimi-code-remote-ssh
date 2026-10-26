@@ -24,6 +24,8 @@ const AGENT_TOOLS = [
   'CronDelete',
   'ReadMediaFile',
   'TodoList',
+  'idc_switch',
+  'idc_status',
   'Skill',
   'WebSearch',
   'Agent',

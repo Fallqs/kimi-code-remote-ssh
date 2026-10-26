@@ -88,7 +88,7 @@ export function registerQuestionsRoutes(app: QuestionRouteHost, core: Scope): vo
       const pending = interactions.findAll({
         kind: 'question',
         resolved: false,
-        tags: { [INTERACTION_TAG_SESSION_ID]: session_id },
+        tags: { [INTERACTION_TAG_SESSION_ID]: handle.id },
       });
       const items = pending.map((i) => toWireQuestion(i, session_id, interactionAgentId(i)));
       reply.send(okEnvelope({ items }, req.id));
@@ -141,13 +141,13 @@ export function registerQuestionsRoutes(app: QuestionRouteHost, core: Scope): vo
             id: tail,
             kind: 'question',
             resolved: false,
-            tags: { [INTERACTION_TAG_SESSION_ID]: session_id },
+            tags: { [INTERACTION_TAG_SESSION_ID]: handle.id },
           }) !== undefined ||
           interactions.findOne({
             id: tail,
             kind: 'question',
             resolved: true,
-            tags: { [INTERACTION_TAG_SESSION_ID]: session_id },
+            tags: { [INTERACTION_TAG_SESSION_ID]: handle.id },
           }) !== undefined
         ) {
           questionId = tail;
@@ -165,7 +165,7 @@ export function registerQuestionsRoutes(app: QuestionRouteHost, core: Scope): vo
         id: questionId,
         kind: 'question',
         resolved: false,
-        tags: { [INTERACTION_TAG_SESSION_ID]: session_id },
+        tags: { [INTERACTION_TAG_SESSION_ID]: handle.id },
       });
 
       if (pendingInteraction === undefined) {
@@ -174,7 +174,7 @@ export function registerQuestionsRoutes(app: QuestionRouteHost, core: Scope): vo
             id: questionId,
             kind: 'question',
             resolved: true,
-            tags: { [INTERACTION_TAG_SESSION_ID]: session_id },
+            tags: { [INTERACTION_TAG_SESSION_ID]: handle.id },
           }) !== undefined
         ) {
           reply.send({

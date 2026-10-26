@@ -83,7 +83,7 @@ export function registerApprovalsRoutes(app: ApprovalRouteHost, core: Scope): vo
       const pending = interactions.findAll({
         kind: 'approval',
         resolved: false,
-        tags: { [INTERACTION_TAG_SESSION_ID]: session_id },
+        tags: { [INTERACTION_TAG_SESSION_ID]: handle.id },
       });
       const items = pending.map((i) => toWireApproval(i, session_id));
       reply.send(okEnvelope({ items }, req.id));
@@ -123,7 +123,7 @@ export function registerApprovalsRoutes(app: ApprovalRouteHost, core: Scope): vo
           id: approval_id,
           kind: 'approval',
           resolved: false,
-          tags: { [INTERACTION_TAG_SESSION_ID]: session_id },
+          tags: { [INTERACTION_TAG_SESSION_ID]: handle.id },
         }) !== undefined;
 
       if (!isPending) {
@@ -132,7 +132,7 @@ export function registerApprovalsRoutes(app: ApprovalRouteHost, core: Scope): vo
             id: approval_id,
             kind: 'approval',
             resolved: true,
-            tags: { [INTERACTION_TAG_SESSION_ID]: session_id },
+            tags: { [INTERACTION_TAG_SESSION_ID]: handle.id },
           }) !== undefined
         ) {
           reply.send({

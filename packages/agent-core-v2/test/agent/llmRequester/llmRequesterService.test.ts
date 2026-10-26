@@ -215,6 +215,7 @@ function createService(
     readonly mediaResolver?: Partial<IAgentMediaResolverService>;
     readonly contextMessages?: Message[];
     readonly env?: Record<string, string>;
+    readonly systemPrompt?: () => string;
   } = {},
 ) {
   const ix = disposables.add(new TestInstantiationService());
@@ -234,7 +235,7 @@ function createService(
       idcLowerBound: undefined,
     }),
     resolveRequestParams: () => ({}),
-    getSystemPrompt: () => 'system',
+    getSystemPrompt: () => options.systemPrompt?.() ?? 'system',
     data: () => ({
       cwd: '',
       modelAlias: 'm',
@@ -359,6 +360,30 @@ describe('AgentLLMRequesterService measured anchors', () => {
 
     expect(measuredCalls).toHaveLength(1);
     expect(measuredCalls[0]?.usage.inputOther).toBe(40);
+  });
+});
+
+describe('AgentLLMRequesterService turn-scoped operation requests', () => {
+  it('reuses the frozen system prompt for compaction requests from the same turn', async () => {
+    const calls = { value: 0 };
+    const capturedInputs: ModelRequestInput[] = [];
+    let systemPrompt = 'frozen system prompt';
+    const { service } = createService(
+      createRequester(calls, null, [], capturedInputs),
+      undefined,
+      { systemPrompt: () => systemPrompt },
+    );
+
+    await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+    systemPrompt = 'changed system prompt';
+    await service.request({
+      source: { type: 'operation', turnId: 1, requestKind: 'full_compaction' },
+    });
+
+    expect(capturedInputs.map((input) => input.systemPrompt)).toEqual([
+      'frozen system prompt',
+      'frozen system prompt',
+    ]);
   });
 });
 
@@ -702,6 +727,22 @@ describe('AgentLLMRequesterService media-degraded resend', () => {
         .filter((record) => record.type === 'llm.request')
         .map((record) => record['projection']),
     ).toEqual([undefined, 'media-degraded', 'media-stripped', 'media-stripped']);
+  });
+
+  it('keeps the recovery projection on compaction requests from the same turn', async () => {
+    const calls = { value: 0 };
+    const projection = recordProjectionCalls();
+    const { service } = createService(
+      createRequester(calls, BODY_TOO_LARGE_413, [BODY_TOO_LARGE_413]),
+      projection.projector,
+    );
+
+    await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+    await service.request({
+      source: { type: 'operation', turnId: 1, requestKind: 'full_compaction' },
+    });
+
+    expect(projection.calls).toEqual(['normal', 'degraded', 'stripped', 'stripped']);
   });
 
   it('keeps new recovery media visible on later snapshot-stripped steps', async () => {

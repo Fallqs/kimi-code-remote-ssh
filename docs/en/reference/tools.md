@@ -84,6 +84,21 @@ Plan mode is a constrained working state: once entered, `Write` and `Edit` are r
 
 **`TodoList`** maintains a visible subtask list across multi-step operations; state is stored within the Agent session. The `todos` parameter accepts an array where each item has a `title` and `status` (`pending` / `in_progress` / `done`). Omitting `todos` queries the current list; passing an empty array clears it.
 
+## Context compaction
+
+Context compaction tools let the main agent inspect and control idle auto-compaction for the current session.
+
+| Tool | Default Approval | Description |
+| --- | --- | --- |
+| `idc_switch` | Auto-allow | Enable, disable, or configure idle auto-compaction |
+| `idc_status` | Auto-allow | Read the current idle auto-compaction settings |
+
+**`idc_switch`** accepts `on` (defaults to `false`), `minutes`, and `lower_bound`. Idle compaction starts disabled in every session, even when the model has a positive [`idc_minutes`](../configuration/config-files.md#models); the main agent must explicitly enable it. `minutes` defaults to the active model's `idc_minutes`, and `lower_bound` defaults to [`loop_control.idc_lower_bound`](../configuration/config-files.md#loop_control) (65,536 tokens when unset). Enabling without a positive timeout fails.
+
+The resolved settings stay fixed across model switches. A later switch without `minutes` uses the then-current model's default. Enabling after the idle delay has already elapsed may compact immediately. Settings are live only and are not restored when the session is resumed.
+
+**`idc_status`** accepts no parameters and returns `on`, `minutes`, and `lower_bound` without changing them. Before the first switch, it reports `on: false` and the defaults a switch would currently use.
+
 ## Collaboration Tools
 
 Collaboration tools handle inter-Agent coordination, user interaction, and Skill invocation.

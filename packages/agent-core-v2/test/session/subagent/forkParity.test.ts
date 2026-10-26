@@ -150,10 +150,20 @@ class ToolContributions {
 }
 
 const SENT_ONLY_WITH_DYNAMIC_TOOL_LOADING: ReadonlySet<string> = new Set([SELECT_TOOLS_TOOL_NAME]);
+const MAIN_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'GOBACK',
+  'GOTO',
+  'idc_switch',
+  'idc_status',
+]);
 
 const PARENT_SYSTEM_PROMPT = 'You are the parity probe parent.';
 const ACTIVE_TOOL_NAMES = ['Agent', 'Bash', 'Read'];
 const CHILD_FINAL_TEXT = 'The inherited task is done.';
+
+function sharedForkTools<T extends { readonly name: string }>(tools: readonly T[]): T[] {
+  return tools.filter((tool) => !MAIN_ONLY_TOOL_NAMES.has(tool.name));
+}
 
 function taskReminders(history: readonly Pick<ContextMessage, 'content'>[]): string[] {
   return history.flatMap((message) => message.content).flatMap((part) =>
@@ -231,7 +241,7 @@ describe('subagent task reminders and fork request parity', () => {
     expect(childReq.systemPrompt).toBe(parentReq.systemPrompt);
 
     expect(parentReq.tools.map((tool) => tool.name)).toEqual([...ACTIVE_TOOL_NAMES].toSorted());
-    expect(childReq.tools).toEqual(parentReq.tools);
+    expect(sharedForkTools(childReq.tools)).toEqual(sharedForkTools(parentReq.tools));
 
     const prefix = childReq.history.slice(0, parentReq.history.length);
     expect(prefix).toEqual(parentReq.history);
@@ -390,7 +400,8 @@ describe('subagent task reminders and fork request parity', () => {
         .filter((name) => !SENT_ONLY_WITH_DYNAMIC_TOOL_LOADING.has(name))
         .toSorted(),
     );
-    expect(childReq.tools).toEqual(parentReq.tools);
+    expect(sharedForkTools(childReq.tools)).toEqual(sharedForkTools(parentReq.tools));
+    expect(childReq.tools.some((tool) => tool.name === 'idc_switch' || tool.name === 'idc_status')).toBe(false);
 
     const prefix = childReq.history.slice(0, parentReq.history.length);
     expect(prefix).toEqual(parentReq.history);
@@ -440,7 +451,7 @@ describe('subagent task reminders and fork request parity', () => {
     expect(ctx.llmCalls).toHaveLength(3);
     const parentReq = ctx.llmCalls[0]!;
     const childReq = ctx.llmCalls[1]!;
-    expect(childReq.tools).toEqual(parentReq.tools);
+    expect(sharedForkTools(childReq.tools)).toEqual(sharedForkTools(parentReq.tools));
 
     const tailText = childReq.history
       .slice(parentReq.history.length)
@@ -606,7 +617,7 @@ describe('subagent task reminders and fork request parity', () => {
     const parentReq = ctx.llmCalls[0]!;
     const childReq = ctx.llmCalls[1]!;
     expect(parentReq.tools.some((tool) => tool.name === 'WaitFor')).toBe(true);
-    expect(childReq.tools).toEqual(parentReq.tools);
+    expect(sharedForkTools(childReq.tools)).toEqual(sharedForkTools(parentReq.tools));
     expect(childReq.systemPrompt).toBe(parentReq.systemPrompt);
     expect(childReq.history.slice(0, parentReq.history.length)).toEqual(parentReq.history);
     expect(ctx.llmCalls).toHaveLength(2);
@@ -637,7 +648,7 @@ describe('subagent task reminders and fork request parity', () => {
       .map((record) => record.properties ?? {});
     expect(probes.map((probe) => probe['agent_id'])).toEqual([beforeCompaction, afterCompaction]);
     expect(probes[0]).toMatchObject({
-      tools_match: true,
+      tools_match: false,
       system_prompt_match: true,
       parent_input_tokens: expect.any(Number),
     });

@@ -152,7 +152,7 @@ KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 | `max_context_size` | `integer` | 是 | 最大上下文长度（token 数），必须 ≥ 1 |
 | `max_input_size` | `integer` | 否 | 模型声明的单次请求输入上限；压缩、溢出检查与用量比率优先使用它，补全预算仍用总窗口 |
 | `max_output_size` | `integer` | 否 | 单次请求的输出 token 上限（对应 `max_tokens`），目前仅 `anthropic` 供应商读取 |
-| `idc_minutes` | `number` | 否 | 空闲自动压缩的等待分钟数；默认 `0`（停用），小于或等于 `0` 均停用。最近一次模型请求完成并经过该时长后，如果上下文达到 [`loop_control.idc_lower_bound`](#loop_control)，就执行压缩；仍在运行的轮次会先完成 |
+| `idc_minutes` | `number` | 否 | [`idc_switch`](../reference/tools.md#上下文压缩) 省略 `minutes` 时使用的默认空闲等待分钟数；默认 `0`。此配置本身不会启用空闲自动压缩，必须由 main agent 显式启用 |
 | `capabilities` | `array<string>` | 否 | 显式追加的能力标签：`thinking`、`always_thinking`、`image_in`、`video_in`、`audio_in`、`tool_use`、`dynamically_loaded_tools`，只能追加不能移除 |
 | `support_efforts` | `array<string>` | 否 | 模型接受的 Thinking 档位；解析时配置值不受支持会回落到模型的 `default_effort` 并同步给 UI；选列表外的值会报错，managed 刷新会改写（固定请用 overrides） |
 | `default_effort` | `string` | 否 | 模型的默认 Thinking 档位；managed/open-platform 刷新可能改写，固定请用 [模型覆盖项](#模型覆盖项) |
@@ -330,7 +330,7 @@ k3-max = "同一模型的 max Thinking 档位。适合最难的子任务。"
 | `max_attempts_per_step` | `integer` | `10` | 单步失败后的最大总尝试次数（含首次尝试） |
 | `reserved_context_size` | `integer` | — | 预留给模型输出的 token 数；上下文窗口剩余量低于此值时触发自动压缩 |
 | `compaction_max_attempts` | `integer` | `5` | 压缩请求失败后的最大总尝试次数（含首次尝试） |
-| `idc_lower_bound` | `integer` | `65536` | 空闲自动压缩所需的最低上下文 token 数；将模型的 [`idc_minutes`](#models) 设为正数即可启用 |
+| `idc_lower_bound` | `integer` | `65536` | [`idc_switch`](../reference/tools.md#上下文压缩) 省略 `lower_bound` 时使用的默认最低上下文 token 数；此配置本身不会启用空闲自动压缩 |
 
 `max_steps_per_turn` 可被环境变量 `KIMI_LOOP_MAX_STEPS_PER_TURN` 覆盖，`max_attempts_per_step` 可被 `KIMI_LOOP_MAX_ATTEMPTS_PER_STEP` 覆盖，优先级均高于配置文件。旧的 `KIMI_LOOP_MAX_RETRIES_PER_STEP` 已废弃，但在新变量未设置时仍生效（启动时会给出警告）。
 

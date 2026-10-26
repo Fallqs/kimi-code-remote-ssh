@@ -7,6 +7,7 @@ import {
   ShadowRegistryService,
 } from '@moonshot-ai/agent-core-v2/features/shadow/shadowRegistry';
 import { ISessionMetadata } from '@moonshot-ai/agent-core-v2/session/sessionMetadata/sessionMetadata';
+import { interactions } from '@moonshot-ai/agent-core-v2/human/interaction/facade';
 import { describe, expect, it } from 'vitest';
 
 import { defineKlientConformance } from './helpers/conformance.js';
@@ -205,5 +206,47 @@ describe('memory dispatcher shadow routing', () => {
     registry.settleTransition('s1');
     await expect(pending).resolves.toEqual({ id: 'shadow-1' });
     expect(seen).toEqual(['shadow-1']);
+  });
+
+  it('scopes interaction views to the live shadow engine session', async () => {
+    const { root, registry, sessions } = makeShadowRoot();
+    sessions.set('s1', fakeSession('s1'));
+    sessions.set('shadow-1', fakeSession('shadow-1'));
+    registry.noteEnter('s1', 'shadow-1');
+    const dispatcher = createMemoryDispatcher(root);
+
+    interactions.enqueue({
+      id: 'approval_shadow',
+      kind: 'approval',
+      payload: {
+        toolName: 'Bash',
+        action: 'run',
+        display: { kind: 'command', command: 'ls' },
+      },
+      tags: { sessionId: 'shadow-1' },
+    });
+    try {
+      const pendingList = (await dispatcher.call(
+        { sessionId: 's1' },
+        'sessionApprovalService',
+        'listPending',
+        [],
+      )) as readonly { id: string }[];
+      expect(pendingList.map((i) => i.id)).toEqual(['approval_shadow']);
+
+      await dispatcher.call({ sessionId: 's1' }, 'sessionApprovalService', 'decide', [
+        'approval_shadow',
+        { decision: 'approved' },
+      ]);
+      const after = (await dispatcher.call(
+        { sessionId: 's1' },
+        'sessionApprovalService',
+        'listPending',
+        [],
+      )) as readonly { id: string }[];
+      expect(after).toEqual([]);
+    } finally {
+      interactions.purgeSession('shadow-1');
+    }
   });
 });

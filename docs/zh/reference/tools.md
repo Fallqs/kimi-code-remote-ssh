@@ -84,6 +84,21 @@ Plan 模式是一种受约束的工作状态：进入后 `Write` 与 `Edit` 只�
 
 **`TodoList`** 在多步骤操作中维护一份可见的子任务列表，状态存储在 Agent 会话内。`todos` 参数接受一个数组，每项含 `title` 和 `status`（`pending` / `in_progress` / `done`）；省略 `todos` 则仅查询当前列表，传入空数组则清空列表。
 
+## 上下文压缩
+
+上下文压缩工具让 main agent 查看并控制当前会话的空闲自动压缩。
+
+| 工具 | 默认审批 | 说明 |
+| --- | --- | --- |
+| `idc_switch` | 自动放行 | 启用、停用或配置空闲自动压缩 |
+| `idc_status` | 自动放行 | 查看当前空闲自动压缩设置 |
+
+**`idc_switch`** 接受 `on`（默认 `false`）、`minutes` 和 `lower_bound`。每个会话的空闲压缩初始均为停用状态，即使模型配置了正数的 [`idc_minutes`](../configuration/config-files.md#models) 也是如此；main agent 必须显式启用。`minutes` 默认使用当前模型的 `idc_minutes`，`lower_bound` 默认使用 [`loop_control.idc_lower_bound`](../configuration/config-files.md#loop_control)（未设置时为 65,536 个 token）。没有正数等待时长时无法启用。
+
+解析后的设置在模型切换后保持不变。后续调用省略 `minutes` 时，使用届时当前模型的默认值。如果在空闲等待时长已经过后才启用，可能会立即压缩。设置仅在当前运行期间有效，恢复会话时不会还原。
+
+**`idc_status`** 不接受参数，返回 `on`、`minutes` 和 `lower_bound`，不会更改设置。首次调用 `idc_switch` 前，它返回 `on: false` 以及当前调用会使用的默认值。
+
 ## 协作类
 
 协作类工具负责 Agent 间协作、用户交互和 Skill 调用。
